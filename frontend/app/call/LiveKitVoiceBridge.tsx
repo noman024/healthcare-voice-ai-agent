@@ -17,6 +17,11 @@ type Props = {
   apiBase: string;
   /** Browser tab must use the SAME room token as LIVEKIT_ROOM running ``livekit_agent_worker.py`` */
   room: Room | null;
+  /** Same keys as /ws/conversation_audio so transcript persistence + booking gate match the main UI */
+  sessionId: string;
+  conversationId: string;
+  /** When true, pipeline may return audio_wav_base64 in events (stripped on data channel — use REST /tts + final_response) */
+  returnSpeech: boolean;
 };
 
 /**
@@ -25,10 +30,14 @@ type Props = {
  *
  * Fallback: ``/conversation`` REST + MediaRecorder stays available on this page alongside this panel.
  */
-export default function LiveKitVoiceBridge({ apiBase: _apiBase, room }: Props) {
+export default function LiveKitVoiceBridge({
+  apiBase: _apiBase,
+  room,
+  sessionId,
+  conversationId,
+  returnSpeech,
+}: Props) {
   void _apiBase;
-  const [sessionId, setSessionId] = useState("lk-live");
-  const [returnSpeech] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
@@ -107,6 +116,7 @@ export default function LiveKitVoiceBridge({ apiBase: _apiBase, room }: Props) {
       await publishJson({
         action: "start",
         session_id: sessionId.trim() || "default",
+        conversation_id: conversationId.trim() || undefined,
         language: null,
         return_speech: returnSpeech,
         file_extension: ".wav",
@@ -142,14 +152,13 @@ export default function LiveKitVoiceBridge({ apiBase: _apiBase, room }: Props) {
         <code className="rounded bg-zinc-100 px-1 font-mono dark:bg-zinc-800">LIVEKIT_ROOM</code> as above. Topic{" "}
         <code className="font-mono">{AGENT_DATA_TOPIC}</code>.
       </p>
-      <label className="block">
-        Session ID
-        <input
-          value={sessionId}
-          onChange={(e) => setSessionId(e.target.value)}
-          className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono dark:border-zinc-600 dark:bg-zinc-950"
-        />
-      </label>
+      <p className="text-zinc-600 dark:text-zinc-400">
+        Uses this page&apos;s{" "}
+        <span className="font-mono text-zinc-800 dark:text-zinc-200">session_id</span> /{" "}
+        <span className="font-mono text-zinc-800 dark:text-zinc-200">conversation_id</span> (see above).{" "}
+        {returnSpeech ? "TTS on (`return_speech`)." : "TTS off for this session."} Large audio is omitted on the data
+        channel — use <span className="font-mono">POST /tts</span> with the assistant text if needed.
+      </p>
       <div className="flex flex-wrap gap-2">
         <button
           type="button"

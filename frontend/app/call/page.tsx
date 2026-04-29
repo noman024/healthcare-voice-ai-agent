@@ -678,7 +678,12 @@ export default function CallPage() {
             <details className="rounded-xl border border-zinc-800 bg-zinc-900/30 text-xs text-zinc-400">
               <summary className="cursor-pointer px-3 py-2 font-medium text-zinc-300">Video bridge (optional)</summary>
               <div className="border-t border-zinc-800 p-3">
-                <LiveKitPanel apiBase={baseUrl} />
+                <LiveKitPanel
+                  apiBase={baseUrl}
+                  sessionId={sessionId}
+                  conversationId={conversationId}
+                  returnSpeech={returnSpeech}
+                />
               </div>
             </details>
           </div>

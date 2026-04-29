@@ -4,6 +4,21 @@
 
 Monorepo: **FastAPI** backend (SQLite appointments, Ollama agent, faster-whisper STT, Piper TTS) and **Next.js 14** call UI at [`/call`](frontend/app/call/page.tsx). Optional **LiveKit** WebRTC uses the same pipeline as WebSocket audio.
 
+### Cost-free / open-source stack (feature parity vs cloud vendors)
+
+This project intentionally uses **local OSS** instead of paid APIs. You get the same product features (voice in/out, tools, summary, optional real-time room) without per-minute STT/TTS/LLM billing:
+
+| Typical cloud component | Local replacement in this repo |
+|-------------------------|----------------------------------|
+| Managed STT (e.g. Deepgram) | **faster-whisper** (`WHISPER_*` in `.env`) |
+| Managed TTS (e.g. Cartesia) | **Piper** (`PIPER_*`) |
+| Hosted LLM API | **Ollama** (`OLLAMA_*`) — pull an instruct model once |
+| Hosted Postgres | **SQLite** (`DATABASE_PATH`) |
+| Real-time voice infra | **LiveKit** OSS server + `livekit_agent_worker.py` (optional) |
+| Video / talking-head avatar SaaS | **Browser Web Audio** avatar on `/call` (level + mouth motion from audio — no third-party avatar SDK) |
+
+For demos and take-homes, run everything on one machine (or GPU for Whisper). Scale-out and hardening are separate production concerns.
+
 ## Prerequisites
 
 - Python **3.11+**

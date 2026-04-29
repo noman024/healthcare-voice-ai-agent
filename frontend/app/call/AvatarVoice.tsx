@@ -15,7 +15,7 @@ type Props = {
 };
 
 /**
- * Circular avatar with a canvas level meter: live mic while recording,
+ * Circular avatar with a canvas: simple mouth ellipse + level bars; live mic while recording,
  * frequency bins from assistant playback while speaking (falls back to soft motion if Web Audio unavailable).
  */
 export default function AvatarVoice({
@@ -78,6 +78,9 @@ export default function AvatarVoice({
     if (!ctx) return;
     const w = canvas.width;
     const h = canvas.height;
+    const mouthBand = 14;
+    const barTop = mouthBand + 4;
+    const barH = h - barTop - 4;
     const nBars = 9;
     const data = new Uint8Array(analyserRef.current ? analyserRef.current.frequencyBinCount : nBars);
 
@@ -116,11 +119,28 @@ export default function AvatarVoice({
         levels = Array(nBars).fill(0.08);
       }
 
+      const avg =
+        levels.length > 0 ? levels.reduce((a, b) => a + b, 0) / levels.length : 0.08;
+      const open = Math.min(1, avg * 1.35);
+      const cx = w / 2;
+      const cy = 7;
+      const rx = 16 + open * 4;
+      const ry = 2.5 + open * 7;
+      ctx.fillStyle =
+        speaking || recording ? "rgba(16, 185, 129, 0.35)" : "rgba(113, 113, 122, 0.22)";
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle =
+        speaking || recording ? "rgba(16, 185, 129, 0.95)" : "rgba(113, 113, 122, 0.55)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
       for (let i = 0; i < nBars; i++) {
         const amp = levels[i] ?? 0.05;
-        const bh = Math.max(4, amp * (h - 8));
+        const bh = Math.max(3, amp * barH);
         const x = gap + i * (barW + gap);
-        const y = h - bh - gap;
+        const y = barTop + barH - bh;
         ctx.fillStyle =
           speaking || recording
             ? "rgba(16, 185, 129, 0.85)"
@@ -150,12 +170,12 @@ export default function AvatarVoice({
         <canvas
           ref={canvasRef}
           width={160}
-          height={44}
+          height={54}
           className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md bg-black/15 dark:bg-black/30"
         />
       </div>
-      <p className="mt-4 max-w-[200px] text-center text-xs text-zinc-500 dark:text-zinc-400">
-        Avatar: mic + TTS level meter (Web Audio). Not a 3D talking head.
+      <p className="mt-4 max-w-[220px] text-center text-xs text-zinc-500 dark:text-zinc-400">
+        Local avatar: Web Audio drives a level meter and a simple mouth shape (no cloud video avatar).
       </p>
     </div>
   );

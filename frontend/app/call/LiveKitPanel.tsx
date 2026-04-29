@@ -5,7 +5,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import LiveKitVoiceBridge from "./LiveKitVoiceBridge";
 
-type Props = { apiBase: string };
+type Props = {
+  apiBase: string;
+  sessionId: string;
+  conversationId: string;
+  returnSpeech: boolean;
+};
 
 export const DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME = "healthcare-demo";
 
@@ -17,7 +22,7 @@ export const DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME = "healthcare-demo";
  *
  * Voice agent fallback: REST + ``/ws/*`` unchanged if LiveKit is unavailable (see README).
  */
-export default function LiveKitPanel({ apiBase }: Props) {
+export default function LiveKitPanel({ apiBase, sessionId, conversationId, returnSpeech }: Props) {
   const livekitUrl = (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "").trim().replace(/\/$/, "");
   const roomRef = useRef<Room | null>(null);
   const [roomState, setRoomState] = useState<Room | null>(null);
@@ -124,7 +129,13 @@ export default function LiveKitPanel({ apiBase }: Props) {
         </button>
       </div>
 
-      <LiveKitVoiceBridge room={roomState} apiBase={apiBase} />
+      <LiveKitVoiceBridge
+        room={roomState}
+        apiBase={apiBase}
+        sessionId={sessionId}
+        conversationId={conversationId}
+        returnSpeech={returnSpeech}
+      />
     </div>
   );
 }
