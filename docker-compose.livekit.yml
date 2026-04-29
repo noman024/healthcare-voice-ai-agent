@@ -1,6 +1,9 @@
 # Dev LiveKit server (WebRTC). Start: docker compose -f docker-compose.livekit.yml up
-# In --dev mode the server prints API key/secret in logs — paste the same into backend/.env as
-# LIVEKIT_API_KEY / LIVEKIT_API_SECRET, and set frontend NEXT_PUBLIC_LIVEKIT_URL=ws://127.0.0.1:7880.
+# In --dev mode the server prints API key/secret in logs — paste into backend/.env as
+# LIVEKIT_API_KEY / LIVEKIT_API_SECRET; set LIVEKIT_URL=ws://127.0.0.1:7880; set frontend
+# NEXT_PUBLIC_LIVEKIT_URL=ws://127.0.0.1:7880. Run the voice agent from backend/ venv:
+#   source .venv/bin/activate && pip install -r requirements-livekit.txt
+#   PYTHONPATH=. python scripts/run_voice_worker.py
 services:
   livekit:
     image: livekit/livekit-server:latest

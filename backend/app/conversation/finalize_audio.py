@@ -1,6 +1,6 @@
-"""Shared finalize-batch audio → STT → agent pipeline (WebSocket, LiveKit worker, scripts).
+"""Shared finalize-batch audio → STT → agent pipeline (WebSocket and batch callers).
 
-All transports ingest one bounded byte buffer (browser WebM/WAV mic capture or LiveKit PCM→WAV)
+All transports ingest one bounded byte buffer (browser WebM/WAV mic capture)
 and reuse the same event stream as :func:`~app.conversation.pipeline.iter_chunked_audio_turn_events`.
 """
 
@@ -26,7 +26,7 @@ def iter_finalize_batch_turn_events(
 ) -> Iterator[dict[str, Any]]:
     """
     Yield the same dictionaries as chunked WebSocket ``/ws/conversation_audio``.
-    Implemented as a thin wrapper so LiveKit/other transports stay aligned with REST/WS semantics.
+    Thin wrapper so REST batch callers stay aligned with WebSocket semantics.
     """
     yield from iter_chunked_audio_turn_events(
         conn,

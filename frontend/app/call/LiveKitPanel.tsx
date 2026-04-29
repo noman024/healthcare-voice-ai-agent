@@ -1,31 +1,26 @@
 "use client";
 
-import { Room, RoomEvent } from "livekit-client";
+import { createLocalTracks, Room, RoomEvent } from "livekit-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-import LiveKitVoiceBridge from "./LiveKitVoiceBridge";
 
 type Props = {
   apiBase: string;
-  sessionId: string;
-  conversationId: string;
-  returnSpeech: boolean;
 };
 
-export const DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME = "healthcare-demo";
+const envDefaultRoom = (process.env.NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM ?? "").trim();
+export const DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME = envDefaultRoom || "healthcare-demo";
 
 /**
- * Optional WebRTC preview: connects to LiveKit when NEXT_PUBLIC_LIVEKIT_URL is set
- * and GET /livekit/token succeeds.
+ * Optional WebRTC: browser joins LiveKit and publishes the microphone. The **livekit-agents**
+ * worker (``scripts/run_voice_worker.py``) handles VAD, STT, LLM, TTS, and tool calls against
+ * the same SQLite DB as FastAPI.
  *
- * The **room name field** MUST match backend ``LIVEKIT_ROOM`` when running ``livekit_agent_worker.py``.
- *
- * Voice agent fallback: REST + ``/ws/*`` unchanged if LiveKit is unavailable (see README).
+ * REST + ``/ws/*`` on this page are unchanged when LiveKit is disabled.
  */
-export default function LiveKitPanel({ apiBase, sessionId, conversationId, returnSpeech }: Props) {
+export default function LiveKitPanel({ apiBase }: Props) {
   const livekitUrl = (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "").trim().replace(/\/$/, "");
   const roomRef = useRef<Room | null>(null);
-  const [roomState, setRoomState] = useState<Room | null>(null);
+  const [connected, setConnected] = useState(false);
   const [roomName, setRoomName] = useState(DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME);
   const [status, setStatus] = useState<string>(livekitUrl ? "idle" : "disabled (set NEXT_PUBLIC_LIVEKIT_URL)");
   const [busy, setBusy] = useState(false);
@@ -33,7 +28,7 @@ export default function LiveKitPanel({ apiBase, sessionId, conversationId, retur
   const disconnect = useCallback(async () => {
     const r = roomRef.current;
     roomRef.current = null;
-    setRoomState(null);
+    setConnected(false);
     if (r && r.state !== "disconnected") await r.disconnect();
     setStatus(livekitUrl ? "idle" : "disabled (set NEXT_PUBLIC_LIVEKIT_URL)");
   }, [livekitUrl]);
@@ -68,19 +63,40 @@ export default function LiveKitPanel({ apiBase, sessionId, conversationId, retur
       }
       const r = new Room();
       roomRef.current = r;
-      setRoomState(r);
       r.on(RoomEvent.Disconnected, () => {
         setStatus("disconnected");
-        setRoomState(null);
+        setConnected(false);
         roomRef.current = null;
       });
       r.on(RoomEvent.Connected, () => setStatus(`connected (${room})`));
       setStatus("connecting…");
       await r.connect(livekitUrl, token);
-      setStatus(`connected (${room})`);
+      setConnected(true);
+      try {
+        const tracks = await createLocalTracks({ audio: true, video: false });
+        const au = tracks[0];
+        if (au) {
+          await r.localParticipant.publishTrack(au);
+          setStatus(`connected (${room}) · microphone on`);
+        } else {
+          setStatus(`connected (${room}) · no microphone track`);
+        }
+      } catch (e) {
+        setStatus(
+          `connected (${room}) · mic: ${e instanceof Error ? e.message : "failed — grant permission?"}`,
+        );
+      }
     } catch (e) {
-      setRoomState(null);
+      setConnected(false);
+      const left = roomRef.current;
       roomRef.current = null;
+      if (left && left.state !== "disconnected") {
+        try {
+          await left.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
       setStatus(e instanceof Error ? `${e.message} — use HTTP/WebSocket agent` : "connect failed");
     } finally {
       setBusy(false);
@@ -91,7 +107,7 @@ export default function LiveKitPanel({ apiBase, sessionId, conversationId, retur
     return (
       <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
         LiveKit WebRTC: set <code className="font-mono">NEXT_PUBLIC_LIVEKIT_URL</code> (e.g. ws://127.0.0.1:7880)
-        and API <code className="font-mono">LIVEKIT_*</code> keys. Voice agent still works via REST/WebSocket.
+        and API <code className="font-mono">LIVEKIT_*</code> keys. Voice still works via REST/WebSocket.
       </div>
     );
   }
@@ -99,13 +115,18 @@ export default function LiveKitPanel({ apiBase, sessionId, conversationId, retur
   return (
     <div className="space-y-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900">
       <p className="font-medium text-zinc-700 dark:text-zinc-200">LiveKit (optional WebRTC)</p>
+      <p className="text-zinc-600 dark:text-zinc-400">
+        Start <code className="rounded bg-zinc-100 px-1 font-mono dark:bg-zinc-800">run_voice_worker.py</code> from{" "}
+        <code className="font-mono">backend/</code> after FastAPI and the LiveKit server. Room name should match what
+        you type here so the agent joins the same room.
+      </p>
       <label className="block text-zinc-600 dark:text-zinc-400">
-        Room name (match <code className="font-mono">LIVEKIT_ROOM</code>)
+        Room name
         <input
           type="text"
           value={roomName}
           onChange={(e) => setRoomName(e.target.value)}
-          disabled={busy || !!roomState}
+          disabled={busy || connected}
           className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-[11px] dark:border-zinc-600 dark:bg-zinc-950"
         />
       </label>
@@ -113,7 +134,7 @@ export default function LiveKitPanel({ apiBase, sessionId, conversationId, retur
       <div className="flex gap-2">
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || connected}
           onClick={() => void connect()}
           className="rounded-md bg-teal-700 px-2 py-1 text-white hover:bg-teal-600 disabled:opacity-50"
         >
@@ -128,14 +149,6 @@ export default function LiveKitPanel({ apiBase, sessionId, conversationId, retur
           Disconnect
         </button>
       </div>
-
-      <LiveKitVoiceBridge
-        room={roomState}
-        apiBase={apiBase}
-        sessionId={sessionId}
-        conversationId={conversationId}
-        returnSpeech={returnSpeech}
-      />
     </div>
   );
 }

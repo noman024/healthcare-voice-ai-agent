@@ -1,140 +1,202 @@
 # Voice Healthcare Agent
 
-**Author:** MD Mutasim Billah Noman  
+**Author:** MD Mutasim Billah Noman
 
-Monorepo: **FastAPI** backend (SQLite appointments, Ollama agent, faster-whisper STT, Piper TTS) and **Next.js 14** call UI at [`/call`](frontend/app/call/page.tsx). Optional **LiveKit** WebRTC uses the same pipeline as WebSocket audio.
+Monorepo: **FastAPI** backend (SQLite, Ollama, faster-whisper, Piper) and **Next.js 14** UI at `[/call](frontend/app/call/page.tsx)`.
 
-### Cost-free / open-source stack (feature parity vs cloud vendors)
+## Architecture
 
-This project intentionally uses **local OSS** instead of paid APIs. You get the same product features (voice in/out, tools, summary, optional real-time room) without per-minute STT/TTS/LLM billing:
 
-| Typical cloud component | Local replacement in this repo |
-|-------------------------|----------------------------------|
-| Managed STT (e.g. Deepgram) | **faster-whisper** (`WHISPER_*` in `.env`) |
-| Managed TTS (e.g. Cartesia) | **Piper** (`PIPER_*`) |
-| Hosted LLM API | **Ollama** (`OLLAMA_*`) — pull an instruct model once |
-| Hosted Postgres | **SQLite** (`DATABASE_PATH`) |
-| Real-time voice infra | **LiveKit** OSS server + `livekit_agent_worker.py` (optional) |
-| Video / talking-head avatar SaaS | **Browser Web Audio** avatar on `/call` (level + mouth motion from audio — no third-party avatar SDK) |
+| Piece                          | Responsibility                                                                                                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **FastAPI** (`backend/`)       | HTTP API, `POST /stt`, `POST /tts`, `POST /tools/invoke`, WebSockets (`/ws/agent`, `/ws/conversation_audio`), `GET /livekit/token`, SQLite                                                             |
+| **Ollama**                     | LLM inference (OpenAI-compatible `/v1` used by the API and by the LiveKit worker)                                                                                                                      |
+| **Browser — main path**        | `/call` can use REST + **WebSocket** voice; STT/TTS/agent run **inside FastAPI**                                                                                                                       |
+| **Browser — optional LiveKit** | WebRTC mic → **livekit-agents** worker: VAD, batch STT (same faster-whisper stack as `/stt`), LLM (Ollama), TTS via `**POST {VOICE_API_BASE}/tts`** (Piper), tools via **same SQLite file** as the API |
 
-For demos and take-homes, run everything on one machine (or GPU for Whisper). Scale-out and hardening are separate production concerns.
+
+LiveKit does **not** replace FastAPI: the worker calls the API for TTS and shares the DB file for tool execution.
+
+### Cost-free stack (vs typical cloud)
+
+
+| Cloud-style               | This repo                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------- |
+| Managed STT               | **faster-whisper** (`WHISPER_`* in `backend/.env`)                                                |
+| Managed TTS               | **Piper** (`PIPER_`*)                                                                             |
+| Hosted LLM                | **Ollama** (`OLLAMA_`*)                                                                           |
+| Database                  | **SQLite** (`DATABASE_PATH`)                                                                      |
+| Real-time room (optional) | **LiveKit** server + `[backend/scripts/run_voice_worker.py](backend/scripts/run_voice_worker.py)` |
+| Avatar                    | In-browser level/mouth from audio (no third-party avatar SDK)                                     |
+
 
 ## Prerequisites
 
 - Python **3.11+**
-- Node **18.17+** (Next 14)
-- **Docker** only if you use [LiveKit](docker-compose.livekit.yml)
+- Node **18.17+**
+- **Docker** only if you use LiveKit via `[docker-compose.livekit.yml](docker-compose.livekit.yml)`
 
-## Quick start
+Always use the **backend virtual environment** for Python: `source backend/.venv/bin/activate` (after creating it below).
 
-**Backend** (from `backend/`):
+## Quick start (local)
+
+### 1. Backend API
+
+From the **repository root**:
 
 ```bash
+cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Set PIPER_BINARY, PIPER_VOICE, OLLAMA_MODEL; for GPU STT without system libcublas.12, see Configuration / requirements-whisper-gpu.txt
+```
+
+Edit `backend/.env` at minimum: `**PIPER_BINARY**`, `**PIPER_VOICE**`, `**OLLAMA_MODEL**` (see comments in `[.env.example](backend/.env.example)`). For GPU STT without system CUDA BLAS, see `[backend/requirements-whisper-gpu.txt](backend/requirements-whisper-gpu.txt)`.
+
+With venv **still active** and cwd `**backend/`**:
+
+```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Ollama** (separate terminal; or use [`scripts/run_with_tools.sh`](scripts/run_with_tools.sh) if tools live under `.tools/ollama/`):
+### 2. Ollama
+
+Separate terminal:
 
 ```bash
 ollama serve
 ollama pull qwen2.5:7b-instruct
 ```
 
-**Frontend** (from `frontend/`):
+(Or use `[scripts/run_with_tools.sh](scripts/run_with_tools.sh)` if tools live under `.tools/ollama/`.)
+
+### 3. Frontend
 
 ```bash
+cd frontend
 npm install
 cp .env.local.example .env.local
 npm run dev
 ```
 
-If **`next dev`** fails with **`Cannot find module './NNN.js'`** (stale build cache), run **`npm run dev:fresh`** or **`npm run clean && npm run dev`**.
+Set `**NEXT_PUBLIC_API_URL**` in `.env.local` to your API (default `http://localhost:8000`).
 
-Open [http://localhost:3000/call](http://localhost:3000/call). Health check: [http://localhost:8000/docs](http://localhost:8000/docs).
+### 4. Open the app
+
+- UI: [http://localhost:3000/call](http://localhost:3000/call)
+- API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+If `**next dev**` errors with `**Cannot find module './NNN.js'**`, run `**npm run dev:fresh**` or `**npm run clean && npm run dev**`.
+
+## LiveKit voice (optional)
+
+Use this when you want **browser WebRTC** + **livekit-agents** instead of (or alongside) the WebSocket voice path on `/call`.
+
+**Order matters:** LiveKit server → `backend/.env` → install worker deps → start **FastAPI** → start **worker** → connect from the UI.
+
+1. **Signal server** (from repo root):
+  ```bash
+   docker compose -f docker-compose.livekit.yml up -d
+  ```
+   In dev, logs usually print `**LIVEKIT_API_KEY**` / `**LIVEKIT_API_SECRET**`. Copy them into `**backend/.env**` (never commit secrets).
+2. **Backend env** (`backend/.env`):
+  - `LIVEKIT_URL` — e.g. `ws://127.0.0.1:7880` (must match the server).
+  - `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — must match the server.
+  - `VOICE_API_BASE` — URL of **this** FastAPI app as the worker will call it (default `http://127.0.0.1:8000`). Change if the API listens elsewhere.
+  - The worker reuses `**OLLAMA_*`** / `**OLLAMA_MODEL**` from the same file when API and worker run on one machine.
+3. **Worker dependencies** (venv active, `cd backend/`):
+  ```bash
+   pip install -r requirements-livekit.txt
+  ```
+4. **Silero assets** (first run only, if prompted): from `backend/` with venv active, run the same CLI entrypoint as the worker:
+
+   ```bash
+   PYTHONPATH=. python scripts/run_voice_worker.py download-files
+   ```
+
+   (`python -m livekit.agents.cli` is not valid in livekit-agents 1.5.x; `download-files` is a subcommand on your worker’s Typer app.)
+5. **Run processes** (three terminals, venv active for Python):
+  - Terminal A: `uvicorn` in `backend/` (as above).
+  - Terminal B: from `backend/`:
+    ```bash
+    source .venv/bin/activate
+    PYTHONPATH=. python scripts/run_voice_worker.py
+    ```
+  - Terminal C: `npm run dev` in `frontend/`.
+6. **Frontend env** (`frontend/.env.local`):
+  - `NEXT_PUBLIC_LIVEKIT_URL` — e.g. `ws://127.0.0.1:7880`.
+  - `NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM` — default room name shown on `/call`; use the **same** name when you click **Connect** in the LiveKit panel so the browser and agent share one room.
 
 ## Database (SQLite)
 
-The API uses a single **SQLite** file for appointments and (optionally) chat history.
 
-| Topic | Detail |
-|--------|--------|
-| **Path** | Set **`DATABASE_PATH`** in `backend/.env` (see [`.env.example`](backend/.env.example)). Default: `data/appointments.db`. If the value is relative, it is resolved against the **process working directory** when the server starts—run **`uvicorn` from `backend/`** so the file lands under `backend/data/`, or use an **absolute** path in production. |
-| **Initialization** | On startup the app opens the file, creates parent directories if needed, and runs **`CREATE TABLE IF NOT EXISTS`** for all tables ([schema](backend/app/db/database.py)). No separate migration step. |
-| **Tables** | **`appointments`** — booked/cancelled slots (`UNIQUE(date, time)`). **`conversation_messages`** — per-`session_id` user/assistant rows when persistence is enabled. |
-| **Conversation history** | With **`CONVERSATION_PERSIST=1`**, turns are written to **`conversation_messages`** so summaries survive API restarts. Without it, only appointments (and tool side effects) need the DB. |
-| **Reset** | Stop the API, delete or replace the SQLite file (or point `DATABASE_PATH` at a new path), then restart—tables are recreated on boot. Back up the file if you need to keep data. |
+| Topic      | Detail                                                                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Path**   | `**DATABASE_PATH`** in `backend/.env`. Relative paths resolve from the **process cwd**—run `**uvicorn` from `backend/`** or use an absolute path. |
+| **Init**   | `CREATE TABLE IF NOT EXISTS` on startup (`[backend/app/db/database.py](backend/app/db/database.py)`).                                             |
+| **Tables** | `appointments`; optional `conversation_messages` when `**CONVERSATION_PERSIST=1`**.                                                               |
+| **Reset**  | Stop API, delete/replace the DB file, restart.                                                                                                    |
 
-Dev-only browser dump: **`ENABLE_DB_INSPECT=1`** and [`GET /internal/db/snapshot`](#api-overview) (see API overview below).
 
-## Configuration
+Dev-only: `**ENABLE_DB_INSPECT=1`** enables `[GET /internal/db/snapshot](http://127.0.0.1:8000/internal/db/snapshot)`.
 
-Full variable list: [`backend/.env.example`](backend/.env.example), [`frontend/.env.local.example`](frontend/.env.local.example).
+## Configuration reference
 
-| Area | Notes |
-|------|--------|
-| **CORS** | `CORS_ORIGINS` must include your frontend origin in production. |
-| **Transcripts** | `CONVERSATION_PERSIST=1` stores dialogue in SQLite so `POST /agent/summary` works across API restarts. |
-| **Phone locale** | `PHONE_DEFAULT_CC` (optional): set **`880`** (or `bd`) so Bangladesh national mobiles **01[3-9]…** (11 digits, e.g. **017…**) normalize to **+880**; unset defaults to inferring **UK** **07…** → **+44**. |
-| **Deploy** | Backend: `uvicorn` from `backend/` with persistent `DATABASE_PATH`. Frontend: `NEXT_PUBLIC_API_URL` → public API. |
-| **STT / GPU** | `WHISPER_DEVICE=auto` (default) or `cuda` uses the GPU when CTranslate2 sees CUDA. On startup the API prepends **`LD_LIBRARY_PATH`** with: `CUDA_LIBRARY_PATH`; pip **`nvidia/*/lib`** (e.g. after `pip install -r requirements-whisper-gpu.txt`); Conda `CONDA_PREFIX/lib`; `CUDA_HOME` and `/usr/local/cuda` targets; `/usr/lib/x86_64-linux-gnu`. If transcription still fails to load CUDA libs, set `CUDA_LIBRARY_PATH` to the directory containing `libcublas.so.12`, or use `WHISPER_DEVICE=cpu`. |
+Templates: `[backend/.env.example](backend/.env.example)`, `[frontend/.env.local.example](frontend/.env.local.example)`, repo root `[.env.example](.env.example)`.
 
-Vendor installs for Ollama/Piper under **`.tools/`** (optional): see comments in `.env.example`. Optional GPU STT CUDA 12 BLAS wheels: [`backend/requirements-whisper-gpu.txt`](backend/requirements-whisper-gpu.txt).
+
+| Area             | Notes                                                                                                                                                       |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **CORS**         | `CORS_ORIGINS` must include the Next.js origin in production.                                                                                               |
+| **Transcripts**  | `CONVERSATION_PERSIST=1` keeps dialogue in SQLite for `POST /agent/summary` across restarts.                                                                |
+| **Phone locale** | Optional `PHONE_DEFAULT_CC` (e.g. `**880`** / `bd` vs UK `**07…**` → `**+44**`).                                                                            |
+| **STT / GPU**    | `WHISPER_DEVICE`, `CUDA_LIBRARY_PATH`, etc.—see `.env.example` and README notes in `[requirements-whisper-gpu.txt](backend/requirements-whisper-gpu.txt)`.  |
+| **LiveKit**      | Backend: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `VOICE_API_BASE`. Frontend: `NEXT_PUBLIC_LIVEKIT_URL`, `NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM`. |
+
+
+Optional vendor paths under `**.tools/`** are documented in `backend/.env.example`.
 
 ## Tests
 
 ```bash
 source backend/.venv/bin/activate
-cd backend && PYTHONPATH=. python -m pytest tests/ -q && bash scripts/qa_scenario_matrix.sh
+cd backend
+PYTHONPATH=. python -m pytest tests/ -q
+bash scripts/qa_scenario_matrix.sh
 ```
 
-With **API on :8000**, optional:
+With API on **:8000**, optional integration scripts (may need Ollama + Piper + Whisper):
 
 ```bash
-cd backend && bash scripts/e2e_real_smoke.sh    # lenient
-cd backend && bash scripts/e2e_integration_real.sh   # strict
+source backend/.venv/bin/activate
+cd backend
+bash scripts/e2e_real_smoke.sh
+bash scripts/e2e_integration_real.sh
 ```
-
-After a full local stack check, refresh [`backend/reports/latest-validation.txt`](backend/reports/latest-validation.txt) (see also `benchmark-output.txt` from `scripts/benchmark_api_performance.py`).
 
 ## Useful scripts (`backend/scripts/`)
 
-| Script | Purpose |
-|--------|---------|
-| `e2e_integration_real.sh` | Strict smoke: needs Ollama + Piper + Whisper |
-| `e2e_real_smoke.sh` | Lenient smoke |
-| `benchmark_api_performance.py` | Route timings |
-| `livekit_agent_worker.py` | LiveKit → same STT/agent path as `/ws/conversation_audio` |
-| `qa_scenario_matrix.sh` | Fast pytest subset + optional `RUN_HTTP=1` |
 
-## LiveKit (optional)
+| Script                         | Purpose                                                      |
+| ------------------------------ | ------------------------------------------------------------ |
+| `run_voice_worker.py`          | LiveKit Agents entrypoint (after `requirements-livekit.txt`) |
+| `e2e_integration_real.sh`      | Strict stack smoke                                           |
+| `e2e_real_smoke.sh`            | Lenient smoke                                                |
+| `benchmark_api_performance.py` | Route timings                                                |
+| `qa_scenario_matrix.sh`        | Pytest subset + optional `RUN_HTTP=1`                        |
 
-```bash
-docker compose -f docker-compose.livekit.yml up -d
-```
-
-Set `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` in `backend/.env` (match server logs in dev). Install `requirements-livekit.txt`. Frontend: `NEXT_PUBLIC_LIVEKIT_URL` (e.g. `ws://127.0.0.1:7880`). Run `PYTHONPATH=. python scripts/livekit_agent_worker.py` from `backend/` with `LIVEKIT_URL` / `LIVEKIT_ROOM` matching the UI room name.
-
-`livekit_worker_stub.py` is connect-only; use `livekit_agent_worker.py` for the real pipeline.
 
 ## API overview
 
-Interactive docs: **`GET /docs`**. Common routes: `POST /process`, `POST /conversation`, `POST /agent/summary`, `POST /tools/invoke`, `POST /stt`, `POST /tts`. WebSockets: `/ws/agent`, `/ws/conversation_audio`.
+- **HTTP:** `POST /process`, `POST /conversation`, `POST /agent/summary`, `POST /tools/invoke`, `POST /stt`, `POST /tts`, `GET /livekit/token`
+- **WebSocket:** `/ws/agent`, `/ws/conversation_audio`
+- **Docs:** `GET /docs`
 
-**Inspect SQLite in the browser (dev only):** set **`ENABLE_DB_INSPECT=1`** in `backend/.env`, restart uvicorn, then open  
-[http://127.0.0.1:8000/internal/db/snapshot](http://127.0.0.1:8000/internal/db/snapshot)  
-Optional query params: `appointments_limit`, `messages_limit`, `session_id` (filter messages). Without the env flag this URL returns **404**.
-
-Default ports: API **8000**, Next **3000**, Ollama **11434**, LiveKit signal **7880**.
+Default ports: API **8000**, Next **3000**, Ollama **11434**, LiveKit **7880**.
 
 ## Future improvements
 
-- **Incremental streaming ASR (design, non-breaking):** Keep today’s **finalize-then-transcribe** path as the canonical contract for `/ws/conversation_audio` and LiveKit (bounded buffer → one `transcribe()` → agent). Add optional phases without removing it:
-  1. **Endpointing on the client:** VAD / silence detection to cap clip length and send shorter finalizes (same server code, lower latency).
-  2. **Optional interim channel:** Same WebSocket or a parallel topic delivering partial transcripts for UI only; **agent turns still wait** for a finalized segment or explicit end-of-utterance to avoid double tool calls.
-  3. **Server streaming decode:** If faster-whisper (or a secondary engine) exposes streaming APIs, buffer segments and merge before planner input while preserving the existing JSON event stream for tools.
-- Hardened production LiveKit (`wss://`, autoscaling workers).
+- **WebSocket ASR:** keep finalize-then-transcribe for `/ws/conversation_audio`; optional client endpointing, interim UI channel, or server streaming decode without changing tool semantics.
+- **LiveKit in production:** `wss://`, hardened keys, worker scaling.
+
