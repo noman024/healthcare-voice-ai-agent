@@ -1,0 +1,11 @@
+# Dev LiveKit server (WebRTC). Start: docker compose -f docker-compose.livekit.yml up
+# In --dev mode the server prints API key/secret in logs — paste the same into backend/.env as
+# LIVEKIT_API_KEY / LIVEKIT_API_SECRET, and set frontend NEXT_PUBLIC_LIVEKIT_URL=ws://127.0.0.1:7880.
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    ports:
+      - "7880:7880"
+      - "7881:7881/tcp"
+      - "7882:7882/udp"

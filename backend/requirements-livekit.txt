@@ -1,0 +1,5 @@
+# Optional — LiveKit agent worker + JWT: ``pip install -r requirements-livekit.txt``
+# (``livekit`` RTC SDK + ``livekit-api`` for tokens / ``livekit_worker_stub.py`` / ``livekit_agent_worker.py``).
+
+livekit>=1.1.0,<2.0
+livekit-api>=0.8.0,<1.0
