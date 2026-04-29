@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from app.agent.memory import get_session_memory
+from app.agent.finalize_guard import apply_tool_truth_guard
 from app.agent.plan_coerce import coerce_agent_plan
 from app.agent.plan_precheck import apply_plan_precheck
 from app.session_booking_gate import register_offered_slots, register_verified_phone
@@ -123,6 +124,7 @@ def iter_turn_events(
         client=client,
         model=finalize_model,
     ).strip()
+    final_response = apply_tool_truth_guard(plan.tool, tool_execution, final_response)
 
     mem.append_exchange(user_message, final_response)
     persist_exchange(

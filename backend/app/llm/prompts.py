@@ -78,7 +78,8 @@ def build_plan_system(*, today_iso: str) -> str:
         + f"\n**Server date (today):** `{today_iso}` (YYYY-MM-DD, machine local).\n"
         f"**No past appointment days:** Never call `fetch_slots` or `book_appointment` for any date **before** `{today_iso}`. "
         "If the only interpretation you can build is **in the past**, use **`tool: \"none\"`** and ask them to confirm a day **on or after today**.\n"
-        "**Garbled dates (voice/STT):** Utterances like «20-7 April» may be a mis-transcribed **day** (e.g. **30** or **27** when they mean **today**). Prefer **`{today_iso}`** or another date **≥ today** when the user clearly means **this week / today**; otherwise ask one short confirmation before using an ISO date.\n"
+        "**StT noise / ambiguous dates:** Phrases like «one myth», «20-7», or «1, 5 April» may be garbled or ambiguous. **Before** calling `fetch_slots` or `book_appointment`, if the calendar day is unclear, use **`tool: \"none\"`** and repeat back **one** concrete interpretation as a question (e.g. May first — is that right?, or Did you mean April fifteenth?). Do **not** pick a random future day if the user likely said **May first** or **first of May** unless they confirm.\n"
+        "**After a successful book:** If the user only says thanks or goodbye with **no new** scheduling request, use **`tool: \"none\"`** — do **not** call `book_appointment` again on that turn (avoid duplicate bookings).\n"
         "**Year:** If the user gives month/day without a year, use **this** calendar year when that date is still **in the future**; if that calendar day has **already passed** this year, use **next** year.\n"
         f"**Clinic slot grid (today's template):** half-hour starts from **{first_slot}** through **{last_slot}** (24h). "
         "The **latest bookable start** is that last time—do **not** offer or confirm **5:00 PM / 17:00** (or any time after that last slot). "
@@ -105,4 +106,4 @@ SUMMARY_STRUCTURED_SYSTEM = """You summarize healthcare appointment voice calls.
 
 The user message includes an authoritative JSON list of appointments from the database for this caller. Reference it for "what is on file"; still ground claims in what was actually discussed.
 
-Do not invent phone numbers, IDs, or dates not present in the transcript or the provided appointment list."""
+Do not invent phone numbers, IDs, or **any calendar year or date** that does not appear in the transcript or in the appointment list JSON (for example never insert 2023 or April 1 unless they appear there). If unsure, state only what is clearly known."""

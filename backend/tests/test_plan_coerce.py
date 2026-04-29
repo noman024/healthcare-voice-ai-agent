@@ -108,6 +108,23 @@ def test_no_coerce_plain_none():
     assert out is p
 
 
+def test_coerce_gratitude_only_demotes_duplicate_book_attempt():
+    p = mk(
+        tool=TOOL_BOOK_APPOINTMENT,
+        intent="oops",
+        arguments={
+            "name": "Pat",
+            "phone": "+14155552671",
+            "date": "2026-07-01",
+            "time": "10:00",
+        },
+    )
+    out, hit = coerce_agent_plan(p, user_message="Thank you very much.")
+    assert hit
+    assert out.tool == "none"
+    assert "welcome" in out.response.lower()
+
+
 @pytest.mark.parametrize(
     "bad",
     ["YYYY-MM-DD", "yyyy-mm-dd", "June-24-2026"],

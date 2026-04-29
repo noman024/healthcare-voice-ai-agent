@@ -21,6 +21,78 @@ from app.tools.executor import (
 logger = logging.getLogger(__name__)
 
 
+def _user_is_gratitude_or_closing_only(user_message: str | None) -> bool:
+    """
+    Short thanks / goodbye without scheduling content — must not trigger book_appointment
+    (avoids duplicate book on “Thank you” after a successful reservation).
+    """
+    if not user_message or not str(user_message).strip():
+        return False
+    u = str(user_message).strip().lower()
+    scheduling_markers = (
+        "book",
+        "appointment",
+        "schedule",
+        "slot",
+        "cancel",
+        "reschedule",
+        "modify",
+        "change",
+        "time",
+        "date",
+        "tomorrow",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+        "morning",
+        "afternoon",
+        ":00",
+        " pm",
+        " am",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+        "january",
+        "february",
+        "march",
+    )
+    if any(t in u for t in scheduling_markers):
+        return False
+    gratitude = (
+        "thank you",
+        "thanks",
+        "thankyou",
+        "appreciate",
+        "much appreciated",
+        "cheers",
+        "goodbye",
+        "bye",
+        "that's all",
+        "that is all",
+        "thats all",
+        "nothing else",
+        "no thanks",
+        "we're done",
+        "were done",
+        "all set",
+    )
+    if any(g in u for g in gratitude):
+        return True
+    if u in ("ty", "ty!", "thx", "thx!"):
+        return True
+    return False
+
+
 def _book_fields_complete(args: dict[str, Any]) -> bool:
     n = args.get("name")
     d = args.get("date")
@@ -71,6 +143,21 @@ def coerce_agent_plan(
             tool=t,
             arguments=new_args,
             response=plan.response,
+        )
+
+    if tool == TOOL_BOOK_APPOINTMENT and _user_is_gratitude_or_closing_only(user_message):
+        logger.info("plan_coerce gratitude-or-closing-only → demote book_appointment")
+        return (
+            AgentPlan(
+                intent="closing",
+                tool="none",
+                arguments={},
+                response=(
+                    "You're welcome—glad we could get you booked. "
+                    "If you need to change anything, just say so."
+                ),
+            ),
+            True,
         )
 
     # --- book_appointment: strip stray appointment_id when real book fields present ---

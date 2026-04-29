@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,17 @@ from app.llm.prompts import SUMMARY_STRUCTURED_SYSTEM
 from app.tools.validation import ToolValidationError, normalize_phone
 
 logger = logging.getLogger(__name__)
+
+_ISO_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+
+
+def _allowed_reference_dates(transcript: str, appointments: list[dict[str, Any]]) -> list[str]:
+    found = {m.group(1) for m in _ISO_DATE.finditer(transcript)}
+    for a in appointments:
+        d = a.get("date")
+        if isinstance(d, str) and d.strip():
+            found.add(d.strip())
+    return sorted(found)
 
 
 def _resolve_lookup_phone(session_id: str, phone_override: str | None) -> str | None:
@@ -85,9 +97,18 @@ def build_agent_summary(
             )
 
     appt_block = json.dumps(appointments, indent=2)
+    allowed = _allowed_reference_dates(transcript, appointments)
+    allowed_note = (
+        "ISO dates you may cite in the narrative (also match phrasing to the transcript): "
+        + ", ".join(allowed)
+        if allowed
+        else "No ISO dates parsed from the transcript — do not invent YYYY-MM-DD or years; paraphrase only what speakers said."
+    )
+
     user_msg = (
         f"Transcript:\n\n{transcript}\n\n"
         f"Database appointments for this caller (authoritative):\n{appt_block}\n\n"
+        f"{allowed_note}\n\n"
         "Output JSON only: narrative (string), user_preferences (array of strings)."
     )
 
