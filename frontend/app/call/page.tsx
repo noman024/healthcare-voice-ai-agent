@@ -76,10 +76,32 @@ function buildActivityFeed(result: AgentPayload): FeedItem[] {
 }
 
 type PlaybackAnalyserRef = MutableRefObject<AnalyserNode | null>;
+type TtsLifecycleRef = MutableRefObject<{ stop: () => void } | null>;
 
+/** Hands-free: endpoint speech after ~800ms silence; barge-in after a few loud ticks during TTS. */
+const VAD_INTERVAL_MS = 50;
+const VAD_RMS_THRESHOLD = 0.036;
+const VAD_LOUD_TICKS_TO_START = 2;
+const VAD_QUIET_TICKS_TO_END = 16;
+const VAD_MIN_UTTERANCE_MS = 450;
+const VAD_BARGE_IN_LOUD_TICKS = 3;
+
+function pcmRmsTimeDomain(analyser: AnalyserNode): number {
+  const buf = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const v = (buf[i]! - 128) / 128;
+    sum += v * v;
+  }
+  return Math.sqrt(sum / buf.length);
+}
+
+/** Decodes and plays WAV base64; optional lifecycle ``stop`` cuts audio (barge-in). */
 async function playWavBase64(
   base64: string,
   playbackAnalyserRef?: PlaybackAnalyserRef,
+  lifecycleRef?: TtsLifecycleRef,
 ): Promise<void> {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -95,12 +117,29 @@ async function playWavBase64(
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     try {
-      await audio.play();
-      await new Promise<void>((resolve) => {
-        audio.onended = () => resolve();
+      await new Promise<void>((resolve, reject) => {
+        let finished = false;
+        const done = () => {
+          if (finished) return;
+          finished = true;
+          if (lifecycleRef) lifecycleRef.current = null;
+          resolve();
+        };
+        audio.onended = () => done();
+        if (lifecycleRef) {
+          lifecycleRef.current = {
+            stop: () => {
+              audio.pause();
+              audio.currentTime = 0;
+              done();
+            },
+          };
+        }
+        void audio.play().catch(reject);
       });
     } finally {
       URL.revokeObjectURL(url);
+      if (lifecycleRef) lifecycleRef.current = null;
     }
     return;
   }
@@ -115,14 +154,36 @@ async function playWavBase64(
     src.connect(an);
     an.connect(ac.destination);
     if (playbackAnalyserRef) playbackAnalyserRef.current = an;
+
+    const teardown = () => {
+      if (playbackAnalyserRef) playbackAnalyserRef.current = null;
+      if (lifecycleRef) lifecycleRef.current = null;
+    };
+
+    if (lifecycleRef) {
+      lifecycleRef.current = {
+        stop: () => {
+          try {
+            src.stop(0);
+          } catch {
+            /* already ended */
+          }
+        },
+      };
+    }
+
     await ac.resume();
     await new Promise<void>((resolve) => {
-      src.onended = () => resolve();
+      src.onended = () => {
+        teardown();
+        resolve();
+      };
       src.start(0);
     });
   } finally {
-    if (playbackAnalyserRef) playbackAnalyserRef.current = null;
     await ac.close().catch(() => undefined);
+    if (playbackAnalyserRef) playbackAnalyserRef.current = null;
+    if (lifecycleRef) lifecycleRef.current = null;
   }
 }
 
@@ -173,6 +234,8 @@ export default function CallPage() {
   const [streamSteps, setStreamSteps] = useState(true);
   const [useChunkedWsMic, setUseChunkedWsMic] = useState(true);
   const [returnSpeech, setReturnSpeech] = useState(true);
+  const [handsFreeMic, setHandsFreeMic] = useState(true);
+  const [voiceSessionOn, setVoiceSessionOn] = useState(false);
   const [micVizStream, setMicVizStream] = useState<MediaStream | null>(null);
   const [result, setResult] = useState<AgentPayload | null>(null);
   const [statusLine, setStatusLine] = useState<FeedItem[]>([]);
@@ -186,9 +249,26 @@ export default function CallPage() {
   const micStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
+  const handsFreeStreamRef = useRef<MediaStream | null>(null);
+  const ttsLifecycleRef = useRef<{ stop: () => void } | null>(null);
+  const busyRef = useRef(false);
+  const speakingRef = useRef(false);
   const lastPhoneRef = useRef<string | null>(null);
   const [recording, setRecording] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+  useEffect(() => {
+    speakingRef.current = speaking;
+  }, [speaking]);
+
+  useEffect(() => {
+    return () => {
+      handsFreeStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+    };
+  }, []);
 
   const appendExchange = useCallback((user: string | null, assistant: string | null) => {
     const t = Date.now();
@@ -271,11 +351,13 @@ export default function CallPage() {
       if (!returnSpeech || !b64 || !ok) return;
       try {
         setSpeaking(true);
-        await playWavBase64(b64, playbackAnalyserRef);
+        speakingRef.current = true;
+        await playWavBase64(b64, playbackAnalyserRef, ttsLifecycleRef);
       } catch {
         /* ignore */
       } finally {
         setSpeaking(false);
+        speakingRef.current = false;
       }
     },
     [returnSpeech],
@@ -553,9 +635,19 @@ export default function CallPage() {
 
   const startMic = useCallback(async () => {
     setError(null);
+    if (voiceSessionOn) {
+      setError("Turn off hands-free voice chat first.");
+      return;
+    }
     chunksRef.current = [];
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       setMicVizStream(stream);
       const mr = new MediaRecorder(stream);
       mediaRecorderRef.current = mr;
@@ -573,7 +665,7 @@ export default function CallPage() {
       setMicVizStream(null);
       setError(e instanceof Error ? e.message : "Microphone unavailable");
     }
-  }, []);
+  }, [voiceSessionOn]);
 
   const stopMicAndSend = useCallback(async () => {
     const mr = mediaRecorderRef.current;
@@ -600,6 +692,163 @@ export default function CallPage() {
     const file = new File([blob], `capture.${ext}`, { type: blob.type });
     await onAudioPick(file);
   }, [onAudioPick, sendBlobWsConversationAudio, useChunkedWsMic]);
+
+  const stopVoiceSession = useCallback(() => {
+    const s = handsFreeStreamRef.current;
+    handsFreeStreamRef.current = null;
+    s?.getTracks().forEach((tr) => tr.stop());
+    setMicVizStream(null);
+    setVoiceSessionOn(false);
+  }, []);
+
+  const startVoiceSession = useCallback(async () => {
+    if (!handsFreeMic) return;
+    if (recording) {
+      setError("Stop push-to-talk recording first.");
+      return;
+    }
+    if (!useChunkedWsMic) {
+      setError('Enable “Mic via WebSocket audio” in Advanced for hands-free voice.');
+      return;
+    }
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      handsFreeStreamRef.current = stream;
+      setMicVizStream(stream);
+      setVoiceSessionOn(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Microphone unavailable");
+    }
+  }, [handsFreeMic, useChunkedWsMic, recording]);
+
+  useEffect(() => {
+    if (!handsFreeMic && voiceSessionOn) stopVoiceSession();
+  }, [handsFreeMic, voiceSessionOn, stopVoiceSession]);
+
+  useEffect(() => {
+    if (!useChunkedWsMic && voiceSessionOn) stopVoiceSession();
+  }, [useChunkedWsMic, voiceSessionOn, stopVoiceSession]);
+
+  useEffect(() => {
+    if (!handsFreeMic || !voiceSessionOn || !useChunkedWsMic) return undefined;
+
+    const stream = handsFreeStreamRef.current;
+    if (!stream) return undefined;
+
+    let cancelled = false;
+    const ac = new AudioContext();
+    const analyser = ac.createAnalyser();
+    analyser.fftSize = 1024;
+    const src = ac.createMediaStreamSource(stream);
+    src.connect(analyser);
+
+    let utterLoud = 0;
+    let utterQuiet = 0;
+    let bargeLoud = 0;
+    let inSpeech = false;
+    let speechStartMs = 0;
+    let segmentRecorder: MediaRecorder | null = null;
+    const segmentChunks: Blob[] = [];
+
+    const stopRecorderAndBlob = (): Promise<Blob | null> =>
+      new Promise((resolve) => {
+        const rec = segmentRecorder;
+        if (!rec || rec.state === "inactive") {
+          segmentRecorder = null;
+          resolve(null);
+          return;
+        }
+        rec.onstop = () => {
+          segmentRecorder = null;
+          const chunks = [...segmentChunks];
+          segmentChunks.length = 0;
+          const blob =
+            chunks.length > 0
+              ? new Blob(chunks, { type: chunks[0]?.type || "audio/webm" })
+              : null;
+          resolve(blob);
+        };
+        rec.stop();
+      });
+
+    void ac.resume();
+
+    const intervalId = window.setInterval(() => {
+      if (cancelled) return;
+      const rms = pcmRmsTimeDomain(analyser);
+      const loud = rms > VAD_RMS_THRESHOLD;
+
+      if (speakingRef.current && loud) {
+        bargeLoud += 1;
+        if (bargeLoud >= VAD_BARGE_IN_LOUD_TICKS) {
+          ttsLifecycleRef.current?.stop();
+          bargeLoud = 0;
+        }
+      } else {
+        bargeLoud = 0;
+      }
+
+      if (busyRef.current) return;
+
+      if (loud) {
+        utterQuiet = 0;
+        utterLoud += 1;
+        if (!inSpeech && utterLoud >= VAD_LOUD_TICKS_TO_START) {
+          inSpeech = true;
+          utterLoud = 0;
+          speechStartMs = Date.now();
+          segmentChunks.length = 0;
+          try {
+            segmentRecorder = new MediaRecorder(stream);
+            segmentRecorder.ondataavailable = (e) => {
+              if (e.data.size) segmentChunks.push(e.data);
+            };
+            segmentRecorder.start(250);
+          } catch {
+            inSpeech = false;
+          }
+        }
+      } else {
+        utterLoud = 0;
+        if (inSpeech) {
+          utterQuiet += 1;
+          if (utterQuiet >= VAD_QUIET_TICKS_TO_END) {
+            inSpeech = false;
+            utterQuiet = 0;
+            const utterStart = speechStartMs;
+            void (async () => {
+              const blob = await stopRecorderAndBlob();
+              if (cancelled || !blob || blob.size < 120) return;
+              if (Date.now() - utterStart < VAD_MIN_UTTERANCE_MS) return;
+              const dotExt = blob.type.includes("webm") ? ".webm" : ".wav";
+              await sendBlobWsConversationAudio(blob, dotExt);
+            })();
+          }
+        }
+      }
+    }, VAD_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      src.disconnect();
+      void ac.close();
+      if (segmentRecorder && segmentRecorder.state !== "inactive") {
+        try {
+          segmentRecorder.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+  }, [handsFreeMic, voiceSessionOn, useChunkedWsMic, sendBlobWsConversationAudio]);
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-[#121212] font-sans text-zinc-100">
@@ -635,11 +884,16 @@ export default function CallPage() {
           <div className="w-full max-w-md">
             <AvatarVoice
               speaking={speaking}
-              recording={recording}
+  recording={recording || (handsFreeMic && voiceSessionOn)}
               mediaStream={micVizStream}
               playbackAnalyserRef={playbackAnalyserRef}
             />
             <div className="mt-4 flex justify-center gap-2">
+              {handsFreeMic && voiceSessionOn ? (
+                <span className="rounded-full bg-teal-500/20 px-3 py-1 text-xs font-medium text-teal-200">
+                  Listening (hands-free)
+                </span>
+              ) : null}
               {recording ? (
                 <span className="rounded-full bg-red-500/20 px-3 py-1 text-xs font-medium text-red-300">
                   Recording
@@ -676,8 +930,14 @@ export default function CallPage() {
               </div>
             ) : null}
             <details className="rounded-xl border border-zinc-800 bg-zinc-900/30 text-xs text-zinc-400">
-              <summary className="cursor-pointer px-3 py-2 font-medium text-zinc-300">Video bridge (optional)</summary>
+              <summary className="cursor-pointer px-3 py-2 font-medium text-zinc-300">
+                LiveKit voice (optional WebRTC)
+              </summary>
               <div className="border-t border-zinc-800 p-3">
+                <p className="mb-2 text-[11px] text-zinc-500">
+                  Not a video bridge: browser mic goes to the LiveKit server; use this when running the
+                  Python worker. Otherwise use voice chat below (WebSocket + VAD).
+                </p>
                 <LiveKitPanel apiBase={baseUrl} />
               </div>
             </details>
@@ -765,7 +1025,7 @@ export default function CallPage() {
                   }
                 }}
               />
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   disabled={busy || !roomReady}
@@ -774,30 +1034,63 @@ export default function CallPage() {
                 >
                   Send
                 </button>
-                <button
-                  type="button"
-                  disabled={busy || recording || !roomReady}
-                  onClick={startMic}
-                  className="rounded-xl border border-zinc-600 px-4 py-2.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
-                  title="Record"
-                >
-                  Mic
-                </button>
-                <button
-                  type="button"
-                  disabled={busy || !recording}
-                  onClick={stopMicAndSend}
-                  className="rounded-xl bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 hover:bg-white disabled:opacity-40"
-                  title="Stop and send"
-                >
-                  Stop
-                </button>
+                {handsFreeMic ? (
+                  <button
+                    type="button"
+                    disabled={busy || !roomReady || recording}
+                    onClick={() => (voiceSessionOn ? stopVoiceSession() : void startVoiceSession())}
+                    className={
+                      voiceSessionOn
+                        ? "rounded-xl bg-rose-700/90 px-4 py-2.5 text-sm font-medium text-white hover:bg-rose-600 disabled:opacity-40"
+                        : "rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-500 disabled:opacity-40"
+                    }
+                    title="Hands-free: speak naturally; pause ~1s to send. Interrupt assistant by speaking over TTS."
+                  >
+                    {voiceSessionOn ? "Stop voice" : "Voice chat"}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={busy || recording || voiceSessionOn || !roomReady}
+                      onClick={startMic}
+                      className="rounded-xl border border-zinc-600 px-4 py-2.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+                      title="Push-to-talk: record"
+                    >
+                      Mic
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !recording}
+                      onClick={() => void stopMicAndSend()}
+                      className="rounded-xl bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 hover:bg-white disabled:opacity-40"
+                      title="Stop and send"
+                    >
+                      Stop
+                    </button>
+                  </>
+                )}
               </div>
+              {handsFreeMic ? (
+                <p className="mx-auto mt-2 max-w-2xl text-[11px] text-zinc-500">
+                  Voice chat uses browser echo cancellation / noise suppression, client VAD (silence
+                  sends your turn), and you can talk over the assistant to cut off TTS. For full
+                  server-side turn-taking, use LiveKit + the worker (panel on the left).
+                </p>
+              ) : null}
             </div>
 
             <details className="mx-auto mt-3 max-w-2xl text-[11px] text-zinc-500">
               <summary className="cursor-pointer text-zinc-400">Advanced</summary>
               <div className="mt-2 space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={handsFreeMic}
+                    onChange={(e) => setHandsFreeMic(e.target.checked)}
+                  />
+                  Hands-free voice (VAD auto-send, interrupt TTS) — off = push-to-talk Mic/Stop
+                </label>
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
