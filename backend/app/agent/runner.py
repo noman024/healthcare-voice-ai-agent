@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from collections.abc import Iterator
 from typing import Any
@@ -41,8 +42,15 @@ def iter_turn_events(
     messages.extend(mem.as_ollama_messages())
     messages.append({"role": "user", "content": user_message})
 
+    planner_model = (os.getenv("OLLAMA_PLANNER_MODEL") or "").strip() or None
+
     def _complete(m: list[dict[str, Any]]) -> str:
-        return ollama_client.ollama_chat(m, client=client, response_format="json")
+        return ollama_client.ollama_chat(
+            m,
+            client=client,
+            response_format="json",
+            model=planner_model,
+        )
 
     try:
         plan = parse_plan_with_retry(_complete, messages, max_attempts=3)
@@ -100,7 +108,12 @@ def iter_turn_events(
         {"role": "system", "content": FINALIZE_SYSTEM},
         {"role": "user", "content": json.dumps(finalize_payload, default=str)},
     ]
-    final_response = ollama_client.ollama_chat(finalize_messages, client=client).strip()
+    finalize_model = (os.getenv("OLLAMA_FINALIZE_MODEL") or "").strip() or None
+    final_response = ollama_client.ollama_chat(
+        finalize_messages,
+        client=client,
+        model=finalize_model,
+    ).strip()
 
     mem.append_exchange(user_message, final_response)
     persist_exchange(

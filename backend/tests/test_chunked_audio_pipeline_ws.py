@@ -13,7 +13,7 @@ def test_iter_chunked_emits_stt_started_then_stt_then_done(db_conn, monkeypatch)
         lambda audio_bytes, suffix, language=None: ("hello world", "en"),
     )
 
-    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None):
+    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None, model=None):
         sys0 = (messages[0].get("content") or "") if messages else ""
         if "You finalize" in sys0 or "finalize" in sys0.lower():
             return "Done."

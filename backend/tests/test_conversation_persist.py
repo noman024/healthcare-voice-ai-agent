@@ -33,7 +33,7 @@ def test_runner_hydrates_from_db_between_turns(db_conn, monkeypatch):
     monkeypatch.setenv("CONVERSATION_PERSIST", "1")
     planners: list[str] = []
 
-    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None):
+    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None, model=None):
         if response_format == "json":
             planners.append(json.dumps(messages))
         return (

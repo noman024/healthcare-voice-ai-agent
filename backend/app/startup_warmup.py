@@ -28,21 +28,33 @@ def warmup_models() -> None:
     try:
         from app.llm import ollama as ollama_mod
 
-        model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct").strip()
+        base = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct").strip()
+        extra = [
+            (os.getenv("OLLAMA_PLANNER_MODEL") or "").strip(),
+            (os.getenv("OLLAMA_FINALIZE_MODEL") or "").strip(),
+        ]
+        tags: list[str] = [base]
+        for t in extra:
+            if t and t not in tags:
+                tags.append(t)
         try:
             names = ollama_mod.ollama_list_model_names()
         except Exception as tag_err:
             logger.warning("warmup_ollama_tags_failed: %s (will still try chat)", tag_err)
             names = None
-        if names is not None and model not in names:
-            logger.warning(
-                "warmup_ollama_skipped model=%s not in `ollama list` — run: ollama pull %s",
-                model,
-                model,
+        for model in tags:
+            if names is not None and model not in names:
+                logger.warning(
+                    "warmup_ollama_skipped model=%s not in `ollama list` — run: ollama pull %s",
+                    model,
+                    model,
+                )
+                continue
+            _ = ollama_mod.ollama_chat(
+                [{"role": "user", "content": "Reply with only the word: ok"}],
+                model=model,
             )
-        else:
-            _ = ollama_mod.ollama_chat([{"role": "user", "content": "Reply with only the word: ok"}])
-            logger.info("warmup_ollama_ok")
+            logger.info("warmup_ollama_ok model=%s", model)
     except Exception as e:
         logger.warning("warmup_ollama_failed: %s", e)
 

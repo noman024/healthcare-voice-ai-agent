@@ -6,7 +6,7 @@ from __future__ import annotations
 def test_process_with_mocks(api_client, monkeypatch):
     import app.llm.ollama as ollama_mod
 
-    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None):
+    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None, model=None):
         sys0 = (messages[0].get("content") or "") if messages else ""
         if "finalize" in sys0.lower() or "You finalize" in sys0:
             return "All set. Reply only."
@@ -28,7 +28,7 @@ def test_process_with_mocks(api_client, monkeypatch):
 def test_conversation_multipart_message_mocked(api_client, monkeypatch):
     import app.llm.ollama as ollama_mod
 
-    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None):
+    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None, model=None):
         sys0 = (messages[0].get("content") or "") if messages else ""
         if "You finalize" in sys0:
             return "Done."
@@ -55,7 +55,7 @@ def test_conversation_audio_uses_stt_mock(api_client, monkeypatch, tmp_path):
         lambda p, language=None: ("user said test", "en"),
     )
 
-    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None):
+    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None, model=None):
         if "You finalize" in (messages[0].get("content") or ""):
             return "OK."
         return '{"intent":"x","tool":"none","arguments":{},"response":"d"}'

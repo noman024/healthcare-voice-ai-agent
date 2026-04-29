@@ -69,12 +69,17 @@ def ollama_chat(
     client: httpx.Client | None = None,
     timeout_s: float | None = None,
     response_format: str | None = None,
+    model: str | None = None,
 ) -> str:
-    """POST /api/chat to a local Ollama server; returns assistant message content."""
+    """POST /api/chat to a local Ollama server; returns assistant message content.
+
+    ``model`` overrides ``OLLAMA_MODEL`` when set (used by the agent for planner vs finalize tags).
+    """
     if timeout_s is None:
         timeout_s = float(os.getenv("OLLAMA_REQUEST_TIMEOUT_S", "300"))
     base = ollama_base_url()
-    model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")
+    base_tag = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct").strip()
+    model = (model or "").strip() or base_tag
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if response_format:
         payload["format"] = response_format
