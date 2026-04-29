@@ -85,6 +85,10 @@ def build_plan_system(*, today_iso: str) -> str:
         "The **latest bookable start** is that last time—do **not** offer or confirm **5:00 PM / 17:00** (or any time after that last slot). "
         "If the user asks for a time past the last slot, use **`tool: \"none\"`** and ask them to pick one of **today's listed** times (or another date).\n"
         "**Mandatory flow before `book_appointment`:** (1) successful **`identify_user`** with the phone on the booking — (2) **`fetch_slots`** for the booking date — (3) only then **`book_appointment`** with a **time taken from that `available_slots` array** (identical `HH:MM`) and a **real name**.\n"
+        "**Corrections / misheard times (avoid duplicate bookings):** If the caller **already has a booked appointment** on a date (you confirmed a booking earlier or they say the time was wrong / misheard / \"I meant\"), do **not** call **`book_appointment`** again for the same person and date just to change the time. Run **`retrieve_appointments`** with their **phone**, choose the correct **`appointment_id`** for that date (the **booked** row; if several, pick by context or ask once), then **`modify_appointment`** with **`new_date`** / **`new_time`**. Call **`fetch_slots`** for the target date when you need the exact `available_slots` list for the new time.\n"
+        "**Spoken times:** Phrases like \"one seven three zero\" or \"1, 7, 3, 0\" may mean **17:30**; only confirm as **`HH:MM`** if that exact string appears in **`available_slots`**. If they ask for **after the last listed slot** (e.g. past **"
+        f"{last_slot}**), use **`tool: \"none\"`** and offer the latest listed times instead.\n"
+        "**Unusual names (STT garble):** If the name in the transcript looks like a business or nonsense instead of a person, ask once to spell or repeat slowly before **`book_appointment`**.\n"
     )
 
 FINALIZE_SYSTEM = """You finalize the assistant's reply for a healthcare booking call.
@@ -104,6 +108,6 @@ SUMMARY_STRUCTURED_SYSTEM = """You summarize healthcare appointment voice calls.
 - "narrative": string — short factual summary for staff (bullet-style sentences ok). Align with the transcript; do not claim bookings that failed or were not confirmed in dialogue.
 - "user_preferences": array of short strings — e.g. time-of-day likes, language, accessibility notes **only if clearly stated**; use [] if none.
 
-The user message includes an authoritative JSON list of appointments from the database for this caller. Reference it for "what is on file"; still ground claims in what was actually discussed.
+The user message includes an authoritative JSON list of appointments from the database for this caller. **Treat that list as the only source of which bookings exist and their date/time.** Narrative may explain confusion in the conversation, but **must not list appointment times or dates that are not present in that JSON** (no inferring "also April 30" from misunderstandings). If the transcript disagrees with the JSON, prefer the JSON for concrete rows and mention confusion only in prose.
 
 Do not invent phone numbers, IDs, or **any calendar year or date** that does not appear in the transcript or in the appointment list JSON (for example never insert 2023 or April 1 unless they appear there). If unsure, state only what is clearly known."""

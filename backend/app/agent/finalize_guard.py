@@ -23,6 +23,28 @@ def _err(tool_execution: dict[str, Any] | None) -> tuple[str | None, str]:
     return c, msg
 
 
+def _booking_prerequisite_order_issue(msg: str) -> bool:
+    """True only when the failure is identify_user / fetch_slots ordering — not time/grid wording."""
+    m = msg.strip()
+    low = m.lower()
+    if low.startswith("bookings require identify_user"):
+        return True
+    if low.startswith("bookings require fetch_slots for this date first"):
+        return True
+    return False
+
+
+def _time_or_grid_booking_issue(msg: str) -> bool:
+    """Slot/time problems that should be explained plainly (not the phone-order script)."""
+    low = msg.lower()
+    return (
+        "not in the available slots" in low
+        or "not a clinic slot" in low
+        or ("time " in low and "clinic" in low)
+        or ("pick a listed time" in low and "bookings require" not in low)
+    )
+
+
 def apply_tool_truth_guard(
     plan_tool: str,
     tool_execution: dict[str, Any] | None,
@@ -53,10 +75,18 @@ def apply_tool_truth_guard(
                 "Please choose a different slot from the times I listed for that day."
             )
         if code == "validation_error" and msg:
-            if "require" in msg.lower() or "fetch_slots" in msg.lower() or "identify_user" in msg:
+            if _time_or_grid_booking_issue(msg):
+                return (
+                    "That time is not on our list of bookable slots for this clinic—"
+                    "for example we may only offer every half hour up to the last morning or afternoon slot shown. "
+                    "I can list the exact times that are open for your day, or if you already have a booking and only "
+                    "need to fix the time, say so and we'll adjust that appointment instead of making a second one."
+                )
+            if _booking_prerequisite_order_issue(msg):
                 return (
                     "I need to confirm your details in the right order before I can reserve that slot—"
-                    "could you tell me again which day and time you'd like, after we've confirmed your phone number?"
+                    "first your phone number on file, then I'll read open times for your date, then we lock the time. "
+                    "If you already gave those and only want to correct a time, ask me to look up your appointments and change that booking."
                 )
             return msg
         return (
