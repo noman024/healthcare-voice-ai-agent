@@ -19,7 +19,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Set PIPER_BINARY, PIPER_VOICE, OLLAMA_MODEL; use absolute paths for Piper.
+# Set PIPER_BINARY, PIPER_VOICE, OLLAMA_MODEL; for GPU STT without system libcublas.12, see Configuration / requirements-whisper-gpu.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -65,16 +65,16 @@ Full variable list: [`backend/.env.example`](backend/.env.example), [`frontend/.
 | **CORS** | `CORS_ORIGINS` must include your frontend origin in production. |
 | **Transcripts** | `CONVERSATION_PERSIST=1` stores dialogue in SQLite so `POST /agent/summary` works across API restarts. |
 | **Phone locale** | `PHONE_DEFAULT_CC` (optional): set **`880`** (or `bd`) so Bangladesh national mobiles **01[3-9]…** (11 digits, e.g. **017…**) normalize to **+880**; unset defaults to inferring **UK** **07…** → **+44**. |
-| **Deploy** | Backend: `uvicorn` with persistent `DATABASE_PATH`. Frontend: `NEXT_PUBLIC_API_URL` → public API. |
-| **Assignment** | One repo is fine if you label `backend/` and `frontend/` as separable; record a short demo on `/call` (voice, tools, summary). |
+| **Deploy** | Backend: `uvicorn` from `backend/` with persistent `DATABASE_PATH`. Frontend: `NEXT_PUBLIC_API_URL` → public API. |
+| **STT / GPU** | `WHISPER_DEVICE=auto` (default) or `cuda` uses the GPU when CTranslate2 sees CUDA. On startup the API prepends **`LD_LIBRARY_PATH`** with: `CUDA_LIBRARY_PATH`; pip **`nvidia/*/lib`** (e.g. after `pip install -r requirements-whisper-gpu.txt`); Conda `CONDA_PREFIX/lib`; `CUDA_HOME` and `/usr/local/cuda` targets; `/usr/lib/x86_64-linux-gnu`. If transcription still fails to load CUDA libs, set `CUDA_LIBRARY_PATH` to the directory containing `libcublas.so.12`, or use `WHISPER_DEVICE=cpu`. |
 
-Vendor installs for Ollama/Piper under **`.tools/`** (optional): see comments in `.env.example`.
+Vendor installs for Ollama/Piper under **`.tools/`** (optional): see comments in `.env.example`. Optional GPU STT CUDA 12 BLAS wheels: [`backend/requirements-whisper-gpu.txt`](backend/requirements-whisper-gpu.txt).
 
 ## Tests
 
 ```bash
 source backend/.venv/bin/activate
-cd backend && PYTHONPATH=. pytest tests/ -q && bash scripts/qa_scenario_matrix.sh
+cd backend && PYTHONPATH=. python -m pytest tests/ -q && bash scripts/qa_scenario_matrix.sh
 ```
 
 With **API on :8000**, optional:
@@ -83,6 +83,8 @@ With **API on :8000**, optional:
 cd backend && bash scripts/e2e_real_smoke.sh    # lenient
 cd backend && bash scripts/e2e_integration_real.sh   # strict
 ```
+
+After a full local stack check, refresh [`backend/reports/latest-validation.txt`](backend/reports/latest-validation.txt) (see also `benchmark-output.txt` from `scripts/benchmark_api_performance.py`).
 
 ## Useful scripts (`backend/scripts/`)
 
@@ -116,4 +118,8 @@ Default ports: API **8000**, Next **3000**, Ollama **11434**, LiveKit signal **7
 
 ## Future improvements
 
-Streaming ASR over open mic (today: finalize-then-transcribe batches), hardened production LiveKit (`wss://`, autoscaling workers).
+- **Incremental streaming ASR (design, non-breaking):** Keep today’s **finalize-then-transcribe** path as the canonical contract for `/ws/conversation_audio` and LiveKit (bounded buffer → one `transcribe()` → agent). Add optional phases without removing it:
+  1. **Endpointing on the client:** VAD / silence detection to cap clip length and send shorter finalizes (same server code, lower latency).
+  2. **Optional interim channel:** Same WebSocket or a parallel topic delivering partial transcripts for UI only; **agent turns still wait** for a finalized segment or explicit end-of-utterance to avoid double tool calls.
+  3. **Server streaming decode:** If faster-whisper (or a secondary engine) exposes streaming APIs, buffer segments and merge before planner input while preserving the existing JSON event stream for tools.
+- Hardened production LiveKit (`wss://`, autoscaling workers).

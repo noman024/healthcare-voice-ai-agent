@@ -1,0 +1,6 @@
+# Optional: install alongside requirements.txt when faster-whisper fails to load libcublas on GPU
+# (CTranslate2 expects CUDA 12–compatible BLAS). Same venv as the API.
+#
+#   pip install -r requirements.txt -r requirements-whisper-gpu.txt
+#
+nvidia-cublas-cu12>=12.1,<13

@@ -1,0 +1,5 @@
+Voice Healthcare Agent — last validation snapshot (regenerate on your machine after tests).
+
+- Pytest: `cd backend && PYTHONPATH=. WARMUP_MODELS=0 python -m pytest tests/ -q` (81 passed when last run).
+- E2E: `bash scripts/e2e_real_smoke.sh` and `bash scripts/e2e_integration_real.sh` with API on :8000.
+- Benchmark: `python scripts/benchmark_api_performance.py` → save output to `reports/benchmark-output.txt`.
