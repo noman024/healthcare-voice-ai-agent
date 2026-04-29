@@ -60,11 +60,14 @@ def summarize_control(obj: dict[str, Any] | None) -> dict[str, Any]:
     if not obj:
         return {
             "session_id": "default",
+            "conversation_id": None,
             "language": None,
             "return_speech": True,
             "file_extension": ".wav",
         }
     sid = str(obj.get("session_id") or "default").strip() or "default"
+    cid_raw = obj.get("conversation_id")
+    cid = str(cid_raw).strip() if cid_raw not in (None, "") else None
     lang_raw = obj.get("language")
     lang = str(lang_raw).strip() if lang_raw not in (None, "") else None
     return_speech = bool(obj.get("return_speech", True))
@@ -73,6 +76,7 @@ def summarize_control(obj: dict[str, Any] | None) -> dict[str, Any]:
         ext = f".{ext}"
     return {
         "session_id": sid,
+        "conversation_id": cid,
         "language": lang,
         "return_speech": return_speech,
         "file_extension": ext,

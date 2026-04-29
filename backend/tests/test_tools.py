@@ -37,12 +37,28 @@ def test_identify_user_validation(db_conn):
     assert r2["success"] is True
     assert r2["data"]["phone"] == "+15551234567"
 
-    uk = execute_tool(db_conn, "identify_user", {"phone": "+44 7700 900123"})
-    assert uk["success"] is True
-    assert uk["data"]["phone"] == "+447700900123"
+    r_nat = execute_tool(db_conn, "identify_user", {"phone": "07700 900123"})
+    assert r_nat["success"] is True
+    assert r_nat["data"]["phone"] == "+447700900123"
 
     too_short = execute_tool(db_conn, "identify_user", {"phone": "+49 123"})
     assert too_short["success"] is False
+
+
+def test_identify_user_bangladesh_national_when_configured(db_conn, monkeypatch):
+    monkeypatch.setenv("PHONE_DEFAULT_CC", "880")
+    r = execute_tool(db_conn, "identify_user", {"phone": "0-1-7-7-3-2-7-2-6-4-9"})
+    assert r["success"] is True
+    assert r["data"]["phone"] == "+8801773272649"
+
+
+def test_fetch_slots_rejects_past_date(db_conn, monkeypatch):
+    from datetime import date
+
+    monkeypatch.setattr("app.tools.validation.calendar_today", lambda: date(2026, 4, 30))
+    r = execute_tool(db_conn, "fetch_slots", {"date": "2026-04-20"})
+    assert r["success"] is False
+    assert r.get("error", {}).get("field") == "date"
 
 
 def test_fetch_slots_and_book_flow(db_conn):
@@ -54,7 +70,7 @@ def test_fetch_slots_and_book_flow(db_conn):
     b = execute_tool(
         db_conn,
         "book_appointment",
-        {"name": "A", "phone": "+15550001111", "date": date, "time": "09:00"},
+        {"name": "Al", "phone": "+15550001111", "date": date, "time": "09:00"},
     )
     assert b["success"] is True
 
@@ -64,7 +80,7 @@ def test_fetch_slots_and_book_flow(db_conn):
     dbl = execute_tool(
         db_conn,
         "book_appointment",
-        {"name": "B", "phone": "+15550002222", "date": date, "time": "09:00"},
+        {"name": "Bob Bee", "phone": "+15550002222", "date": date, "time": "09:00"},
     )
     assert dbl["success"] is False
     assert dbl["error"]["code"] == "double_booking"

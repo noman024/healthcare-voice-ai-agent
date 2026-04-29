@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from datetime import datetime
+
 from app.llm.schema import AgentPlan
 from app.tools.executor import (
     TOOL_BOOK_APPOINTMENT,
@@ -15,7 +17,14 @@ from app.tools.executor import (
     TOOL_MODIFY_APPOINTMENT,
     TOOL_RETRIEVE_APPOINTMENTS,
 )
-from app.tools.validation import ToolValidationError, _DATE_RE, _TIME_RE, normalize_phone
+from app.tools.validation import (
+    ToolValidationError,
+    _DATE_RE,
+    _TIME_RE,
+    calendar_today,
+    normalize_phone,
+    person_name_precheck_ok,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,17 +105,58 @@ def apply_plan_precheck(plan: AgentPlan) -> AgentPlan:
                 ),
                 note="fetch_slots_missing_or_invalid_date",
             )
+        try:
+            if datetime.strptime(ds, "%Y-%m-%d").date() < calendar_today():
+                t_iso = calendar_today().isoformat()
+                return _demote(
+                    plan,
+                    draft=(
+                        f"I can't show openings for {ds}—that day is already before today "
+                        f"({t_iso}). Which day from today onward should I check?"
+                    ),
+                    note="fetch_slots_past_date",
+                )
+        except ValueError:
+            return _demote(
+                plan,
+                draft=(
+                    "Which day should I check? Please give a valid calendar date as "
+                    "YYYY-MM-DD."
+                ),
+                note="fetch_slots_invalid_calendar_date",
+            )
         return plan
 
     if t == TOOL_BOOK_APPOINTMENT:
         missing: list[str] = []
         if not str(a.get("name") or "").strip():
             missing.append("name")
+        elif not person_name_precheck_ok(a.get("name")):
+            return _demote(
+                plan,
+                draft="Could you share your full name for the appointment (not a placeholder)?",
+                note="book_appointment_placeholder_name",
+            )
         if not _phone_arg_ok(a.get("phone")):
             missing.append("phone")
         d = a.get("date")
-        if not d or not _DATE_RE.match(str(d).strip()):
+        ds_book = str(d).strip() if d is not None else ""
+        if not ds_book or not _DATE_RE.match(ds_book):
             missing.append("date (YYYY-MM-DD)")
+        else:
+            try:
+                if datetime.strptime(ds_book, "%Y-%m-%d").date() < calendar_today():
+                    t_iso = calendar_today().isoformat()
+                    return _demote(
+                        plan,
+                        draft=(
+                            f"I can't book for {ds_book}—that's before today ({t_iso}). "
+                            "Pick today or a future day."
+                        ),
+                        note="book_appointment_past_date",
+                    )
+            except ValueError:
+                missing.append("date (YYYY-MM-DD)")
         tm = a.get("time")
         if not tm or not _TIME_RE.match(str(tm).strip()):
             missing.append("time (HH:MM 24-hour)")
@@ -150,8 +200,23 @@ def apply_plan_precheck(plan: AgentPlan) -> AgentPlan:
         if not _phone_arg_ok(a.get("phone")):
             missing_m.append("phone")
         nd = a.get("new_date")
-        if not nd or not _DATE_RE.match(str(nd).strip()):
+        nds = str(nd).strip() if nd is not None else ""
+        if not nds or not _DATE_RE.match(nds):
             missing_m.append("new_date (YYYY-MM-DD)")
+        else:
+            try:
+                if datetime.strptime(nds, "%Y-%m-%d").date() < calendar_today():
+                    t_iso = calendar_today().isoformat()
+                    return _demote(
+                        plan,
+                        draft=(
+                            f"I can't move the appointment to {nds}—that date is before today "
+                            f"({t_iso}). Choose today or a future day."
+                        ),
+                        note="modify_past_new_date",
+                    )
+            except ValueError:
+                missing_m.append("new_date (YYYY-MM-DD)")
         nt = a.get("new_time")
         if not nt or not _TIME_RE.match(str(nt).strip()):
             missing_m.append("new_time (HH:MM)")

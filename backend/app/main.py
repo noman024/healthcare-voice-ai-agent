@@ -103,6 +103,54 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _db_inspect_enabled() -> bool:
+    return os.getenv("ENABLE_DB_INSPECT", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.get("/internal/db/snapshot")
+def internal_db_snapshot(
+    request: Request,
+    appointments_limit: int = 50,
+    messages_limit: int = 50,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Read-only JSON view of SQLite (appointments + conversation_messages).
+    **Off by default** — set ``ENABLE_DB_INSPECT=1`` in ``backend/.env`` for local use only.
+    Returns **404** when disabled so the route is not advertised in production.
+    """
+    if not _db_inspect_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    ap_lim = max(1, min(int(appointments_limit), 200))
+    msg_lim = max(1, min(int(messages_limit), 200))
+    conn = request.app.state.db_conn
+
+    ap_total = int(conn.execute("SELECT COUNT(*) AS c FROM appointments").fetchone()["c"])
+    msg_total = int(conn.execute("SELECT COUNT(*) AS c FROM conversation_messages").fetchone()["c"])
+
+    ap_rows = conn.execute(
+        f"SELECT * FROM appointments ORDER BY id DESC LIMIT {ap_lim}",
+    ).fetchall()
+
+    if session_id and session_id.strip():
+        sid = session_id.strip()
+        msg_rows = conn.execute(
+            f"SELECT * FROM conversation_messages WHERE session_id = ? ORDER BY id DESC LIMIT {msg_lim}",
+            (sid,),
+        ).fetchall()
+    else:
+        msg_rows = conn.execute(
+            f"SELECT * FROM conversation_messages ORDER BY id DESC LIMIT {msg_lim}",
+        ).fetchall()
+
+    return {
+        "counts": {"appointments": ap_total, "conversation_messages": msg_total},
+        "appointments": [dict(r) for r in ap_rows],
+        "conversation_messages": [dict(r) for r in msg_rows],
+    }
+
+
 def _ollama_tags_get(base_url: str) -> httpx.Response:
     return httpx.get(f"{base_url}/api/tags", timeout=3.0)
 
@@ -137,6 +185,7 @@ def tools_invoke(body: ToolInvokeBody, request: Request) -> dict[str, Any]:
 class AgentTurnBody(BaseModel):
     message: str = Field(..., min_length=1)
     session_id: str = Field(default="default", max_length=128)
+    conversation_id: str | None = Field(default=None, max_length=128)
 
 
 @app.post("/agent/turn")
@@ -149,6 +198,11 @@ def agent_turn(body: AgentTurnBody, request: Request) -> dict[str, Any]:
             request.app.state.db_conn,
             user_message=body.message.strip(),
             session_id=(body.session_id.strip() or "default"),
+            persistence_session_id=(
+                body.conversation_id.strip()
+                if isinstance(body.conversation_id, str) and body.conversation_id.strip()
+                else None
+            ),
         )
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"LLM service error: {e}") from e
@@ -157,24 +211,41 @@ def agent_turn(body: AgentTurnBody, request: Request) -> dict[str, Any]:
 
 
 class AgentSummaryBody(BaseModel):
-    """Summarize in-memory transcript for ``session_id`` (after one or more ``/agent/turn`` or conversation calls)."""
+    """Summarize transcript for ``session_id`` (hydrates from SQLite when ``CONVERSATION_PERSIST`` is on)."""
 
     session_id: str = Field(default="default", max_length=128)
+    conversation_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Optional stable id for transcript storage; when set, summary loads history under this key.",
+    )
+    phone: str | None = Field(
+        default=None,
+        max_length=32,
+        description="Optional E.164-style phone to list DB appointments; else session_id is tried if it looks like a phone.",
+    )
 
 
 @app.post("/agent/summary")
 def agent_summary(body: AgentSummaryBody, request: Request) -> dict[str, Any]:
-    """LLM summary of the rolling session transcript (same server memory as ``/agent/turn``)."""
-    from app.agent.summary import summarize_session
+    """LLM summary + appointment snapshot + server timestamp (same session memory as conversation routes)."""
+    from app.agent.summary import build_agent_summary
 
     sid = (body.session_id.strip() or "default")
+    tid = (body.conversation_id.strip() if isinstance(body.conversation_id, str) and body.conversation_id.strip() else None)
+    cost = os.getenv("INCLUDE_COST_HINTS", "0").strip().lower() in ("1", "true", "yes", "on")
     try:
-        text = summarize_session(session_id=sid)
+        return build_agent_summary(
+            request.app.state.db_conn,
+            session_id=sid,
+            conversation_id=tid,
+            phone=(body.phone.strip() if isinstance(body.phone, str) and body.phone.strip() else None),
+            include_cost_hints=cost,
+        )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"LLM service error: {e}") from e
-    return {"session_id": sid, "summary": text}
 
 
 @app.websocket("/ws/agent")
@@ -211,12 +282,19 @@ async def ws_agent(websocket: WebSocket) -> None:
                 await websocket.send_json({"type": "error", "message": "message required"})
                 continue
             sid = str(payload.get("session_id") or "default").strip() or "default"
+            cid_raw = payload.get("conversation_id")
+            cid = str(cid_raw).strip() if cid_raw not in (None, "") else None
 
             q: queue.Queue = queue.Queue(maxsize=64)
 
             def producer() -> None:
                 try:
-                    for ev in iter_turn_events(conn, user_message=msg, session_id=sid):
+                    for ev in iter_turn_events(
+                        conn,
+                        user_message=msg,
+                        session_id=sid,
+                        persistence_session_id=cid,
+                    ):
                         q.put(ev)
                 except Exception as e:
                     logger.exception("ws_agent_turn_failed")
@@ -273,8 +351,11 @@ async def ws_conversation_audio(websocket: WebSocket) -> None:
                     sid = str(payload.get("session_id") or "default").strip() or "default"
                     lang_raw = payload.get("language")
                     lang = str(lang_raw).strip() if lang_raw not in (None, "") else None
+                    cid_raw = payload.get("conversation_id")
+                    cid = str(cid_raw).strip() if cid_raw not in (None, "") else None
                     meta = {
                         "session_id": sid,
+                        "conversation_id": cid,
                         "language": lang,
                         "return_speech": bool(payload.get("return_speech", True)),
                         "file_extension": str(payload.get("file_extension") or ".webm"),
@@ -300,6 +381,7 @@ async def ws_conversation_audio(websocket: WebSocket) -> None:
                                 session_id=str(meta.get("session_id") or "default"),
                                 language=meta.get("language"),
                                 return_speech=bool(meta.get("return_speech", True)),
+                                conversation_id=meta.get("conversation_id"),
                             ):
                                 aq.put(ev)
                         except Exception as e:
@@ -331,6 +413,7 @@ async def ws_conversation_audio(websocket: WebSocket) -> None:
 class ProcessBody(BaseModel):
     message: str = Field(..., min_length=1)
     session_id: str = Field(default="default", max_length=128)
+    conversation_id: str | None = Field(default=None, max_length=128)
     return_speech: bool = False
 
 
@@ -345,6 +428,11 @@ def process_endpoint(body: ProcessBody, request: Request) -> dict[str, Any]:
             message=body.message,
             session_id=(body.session_id.strip() or "default"),
             return_speech=body.return_speech,
+            conversation_id=(
+                body.conversation_id.strip()
+                if isinstance(body.conversation_id, str) and body.conversation_id.strip()
+                else None
+            ),
         )
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"LLM service error: {e}") from e
@@ -357,6 +445,7 @@ async def conversation_endpoint(
     request: Request,
     audio: Optional[UploadFile] = File(None),
     session_id: str = Form("default"),
+    conversation_id: Optional[str] = Form(None),
     language: Optional[str] = Form(None),
     return_speech: bool = Form(True),
     message: Optional[str] = Form(None),
@@ -368,6 +457,7 @@ async def conversation_endpoint(
     from app.conversation.pipeline import process_audio_bytes, process_text_message
 
     sid = (session_id or "").strip() or "default"
+    cid = (conversation_id or "").strip() or None
     lang = (language or "").strip() or None
 
     try:
@@ -385,6 +475,7 @@ async def conversation_endpoint(
                 session_id=sid,
                 language=lang,
                 return_speech=return_speech,
+                conversation_id=cid,
             )
 
         msg = (message or "").strip()
@@ -394,6 +485,7 @@ async def conversation_endpoint(
                 message=msg,
                 session_id=sid,
                 return_speech=return_speech,
+                conversation_id=cid,
             )
 
         raise HTTPException(

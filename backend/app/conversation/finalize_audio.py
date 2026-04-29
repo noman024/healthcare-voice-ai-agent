@@ -21,6 +21,7 @@ def iter_finalize_batch_turn_events(
     session_id: str,
     language: str | None,
     return_speech: bool,
+    conversation_id: str | None = None,
     client: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     """
@@ -34,6 +35,7 @@ def iter_finalize_batch_turn_events(
         session_id=session_id,
         language=language,
         return_speech=return_speech,
+        conversation_id=conversation_id,
         client=client,
     )
 

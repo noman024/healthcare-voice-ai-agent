@@ -2,8 +2,10 @@ import json
 
 import httpx
 
+from app.session_booking_gate import register_offered_slots, register_verified_phone
 from app.agent.memory import clear_session_memory_for_tests, get_session_memory
 from app.agent.runner import run_turn
+from app.tools import slots
 
 
 def test_memory_keeps_last_twenty_chat_messages():
@@ -44,6 +46,8 @@ def test_run_turn_planner_finalize_mock(db_conn):
 
 def test_run_turn_executes_booking_tool(db_conn):
     clear_session_memory_for_tests()
+    register_verified_phone("s-book", "+15559876543")
+    register_offered_slots("s-book", "2026-08-01", slots.day_slot_candidates())
     n = {"c": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:

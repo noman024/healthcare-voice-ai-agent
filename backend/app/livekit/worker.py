@@ -183,6 +183,7 @@ class LiveKitAgentWorker:
                     session_id=session_id,
                     language=language,
                     return_speech=return_speech,
+                    conversation_id=meta.get("conversation_id"),
                 ),
             )
 

@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 from collections.abc import Iterator
+from datetime import date
 from typing import Any
 
 import httpx
@@ -14,12 +15,13 @@ import httpx
 from app.agent.memory import get_session_memory
 from app.agent.plan_coerce import coerce_agent_plan
 from app.agent.plan_precheck import apply_plan_precheck
+from app.session_booking_gate import register_offered_slots, register_verified_phone
 from app.db.conversation_messages import hydrate_session_memory, persist_exchange
 from app.llm import ollama as ollama_client
 from app.llm.parser import parse_plan_with_retry
-from app.llm.prompts import FINALIZE_SYSTEM, PLAN_SYSTEM
+from app.llm.prompts import FINALIZE_SYSTEM, build_plan_system
 from app.llm.schema import AgentPlan
-from app.tools.executor import TOOL_IDENTIFY_USER, execute_tool
+from app.tools.executor import TOOL_FETCH_SLOTS, TOOL_IDENTIFY_USER, execute_tool
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +31,23 @@ def iter_turn_events(
     *,
     user_message: str,
     session_id: str = "default",
+    persistence_session_id: str | None = None,
     client: httpx.Client | None = None,
 ) -> Iterator[dict[str, Any]]:
     """
     Same pipeline as run_turn, yielding structured events for WebSocket / activity feeds.
 
     Order: plan → optional tool → done (includes final_response and full plan payload).
+
+    ``persistence_session_id`` (if set) keys in-memory + SQLite transcript storage while
+    ``session_id`` still drives tools (e.g. UI handoff to normalized phone for booking gate).
     """
-    mem = get_session_memory(session_id)
-    hydrate_session_memory(mem, conn, session_id)
-    messages: list[dict[str, Any]] = [{"role": "system", "content": PLAN_SYSTEM}]
+    pid = (persistence_session_id or "").strip() or session_id
+    mem = get_session_memory(pid)
+    hydrate_session_memory(mem, conn, pid)
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": build_plan_system(today_iso=date.today().isoformat())},
+    ]
     messages.extend(mem.as_ollama_messages())
     messages.append({"role": "user", "content": user_message})
 
@@ -80,7 +89,7 @@ def iter_turn_events(
     tool_execution: dict[str, Any] | None = None
     session_identity: dict[str, str] | None = None
     if plan.tool != "none":
-        tool_execution = execute_tool(conn, plan.tool, plan.arguments)
+        tool_execution = execute_tool(conn, plan.tool, plan.arguments, session_id=session_id)
         logger.info(
             "agent_tool_ran session=%s tool=%s success=%s",
             session_id,
@@ -88,15 +97,15 @@ def iter_turn_events(
             tool_execution.get("success") if isinstance(tool_execution, dict) else None,
         )
         yield {"type": "tool", "session_id": session_id, "tool_execution": tool_execution}
-        if (
-            plan.tool == TOOL_IDENTIFY_USER
-            and isinstance(tool_execution, dict)
-            and tool_execution.get("success") is True
-        ):
+        if isinstance(tool_execution, dict) and tool_execution.get("success") is True:
             data = tool_execution.get("data") or {}
-            phone = data.get("phone")
-            if phone is not None and str(phone).strip():
-                session_identity = {"suggested_session_id": str(phone).strip()}
+            if plan.tool == TOOL_FETCH_SLOTS:
+                register_offered_slots(session_id, str(data.get("date") or ""), data.get("available_slots") or [])
+            if plan.tool == TOOL_IDENTIFY_USER and data.get("phone"):
+                ph = str(data["phone"]).strip()
+                register_verified_phone(session_id, ph)
+                if ph:
+                    session_identity = {"suggested_session_id": ph}
 
     finalize_payload = {
         "user_message": user_message,
@@ -118,7 +127,7 @@ def iter_turn_events(
     mem.append_exchange(user_message, final_response)
     persist_exchange(
         conn,
-        session_id=session_id,
+        session_id=pid,
         user_message=user_message,
         assistant_message=final_response,
     )
@@ -145,6 +154,7 @@ def run_turn(
     *,
     user_message: str,
     session_id: str = "default",
+    persistence_session_id: str | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """
@@ -156,6 +166,7 @@ def run_turn(
         conn,
         user_message=user_message,
         session_id=session_id,
+        persistence_session_id=persistence_session_id,
         client=client,
     ):
         if ev.get("type") == "done":

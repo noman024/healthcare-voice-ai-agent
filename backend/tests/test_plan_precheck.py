@@ -30,6 +30,37 @@ def test_fetch_slots_bad_date_demotes_to_none() -> None:
     assert out.tool == "none"
 
 
+def test_book_placeholder_name_demotes() -> None:
+    plan = AgentPlan(
+        intent="book",
+        tool=TOOL_BOOK_APPOINTMENT,
+        arguments={
+            "name": "Unknown",
+            "phone": "+14155552671",
+            "date": "2026-06-01",
+            "time": "10:00",
+        },
+        response="Booking…",
+    )
+    out = apply_plan_precheck(plan)
+    assert out.tool == "none"
+
+
+def test_fetch_slots_past_date_demotes(monkeypatch) -> None:
+    from datetime import date
+
+    monkeypatch.setattr("app.agent.plan_precheck.calendar_today", lambda: date(2026, 4, 30))
+    plan = AgentPlan(
+        intent="slots",
+        tool=TOOL_FETCH_SLOTS,
+        arguments={"date": "2026-04-20"},
+        response="Fetching…",
+    )
+    out = apply_plan_precheck(plan)
+    assert out.tool == "none"
+    assert "today" in (out.response or "").lower()
+
+
 def test_book_complete_args_passes_through() -> None:
     plan = AgentPlan(
         intent="book",

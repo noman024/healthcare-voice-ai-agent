@@ -4,16 +4,20 @@ import logging
 import sqlite3
 from typing import Any
 
+from app.session_booking_gate import assert_booking_gate_ok
 from app.db import appointments as appt_repo
 from app.tools import slots
 from app.tools.validation import (
     ToolValidationError,
+    assert_date_not_in_past,
     normalize_phone,
     optional_str,
     parse_date_str,
     parse_time_str,
     require_int,
     require_str,
+    validate_booking_display_name,
+    validate_clinic_template_time,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,17 +69,26 @@ def _tool_identify_user(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_fetch_slots(conn: sqlite3.Connection, arguments: dict[str, Any]) -> dict[str, Any]:
     date = parse_date_str(require_str(arguments, "date"))
+    assert_date_not_in_past(date)
     candidates = slots.day_slot_candidates()
     available = appt_repo.list_bookable_slot_times(conn, date, candidates)
     logger.info("fetch_slots date=%s available=%s", date, len(available))
     return {"date": date, "available_slots": available}
 
 
-def _tool_book_appointment(conn: sqlite3.Connection, arguments: dict[str, Any]) -> dict[str, Any]:
-    name = require_str(arguments, "name")
+def _tool_book_appointment(
+    conn: sqlite3.Connection,
+    arguments: dict[str, Any],
+    *,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    name = validate_booking_display_name(require_str(arguments, "name"))
     phone = normalize_phone(require_str(arguments, "phone"))
     date = parse_date_str(require_str(arguments, "date"))
+    assert_date_not_in_past(date)
     time = parse_time_str(require_str(arguments, "time"))
+    validate_clinic_template_time(time)
+    assert_booking_gate_ok(session_id, phone, date, time)
     appt = appt_repo.book_appointment(conn, name=name, phone=phone, date=date, time=time)
     logger.info("book_appointment id=%s %s %s", appt.id, date, time)
     return {
@@ -133,7 +146,9 @@ def _tool_modify_appointment(conn: sqlite3.Connection, arguments: dict[str, Any]
     appointment_id = require_int(arguments, "appointment_id")
     phone = normalize_phone(require_str(arguments, "phone"))
     new_date = parse_date_str(require_str(arguments, "new_date"))
+    assert_date_not_in_past(new_date)
     new_time = parse_time_str(require_str(arguments, "new_time"))
+    validate_clinic_template_time(new_time)
     appt = appt_repo.modify_appointment_timeslot(
         conn,
         appointment_id,
@@ -164,8 +179,14 @@ def execute_tool(
     conn: sqlite3.Connection,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
+    *,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
-    """Run a tool by name with JSON-like argument dict; never raises for domain errors."""
+    """Run a tool by name with JSON-like argument dict; never raises for domain errors.
+
+    ``session_id`` enables stricter booking rules (identify + fetch_slots ordering).
+    ``POST /tools/invoke`` omits it so integration tests stay direct.
+    """
     args = dict(arguments or {})
     name = str(tool_name).strip()
     if name not in TOOL_NAMES:
@@ -178,7 +199,7 @@ def execute_tool(
         if name == TOOL_FETCH_SLOTS:
             return _ok(name, _tool_fetch_slots(conn, args))
         if name == TOOL_BOOK_APPOINTMENT:
-            return _ok(name, _tool_book_appointment(conn, args))
+            return _ok(name, _tool_book_appointment(conn, args, session_id=session_id))
         if name == TOOL_RETRIEVE_APPOINTMENTS:
             return _ok(name, _tool_retrieve_appointments(conn, args))
         if name == TOOL_CANCEL_APPOINTMENT:

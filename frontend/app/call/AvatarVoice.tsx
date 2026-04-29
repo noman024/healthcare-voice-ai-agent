@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { type MutableRefObject, useEffect, useRef } from "react";
 
 type Props = {
   /** True while TTS or assistant audio is playing */
@@ -9,14 +9,22 @@ type Props = {
   recording: boolean;
   /** Live mic stream while recording (drives input level meter) */
   mediaStream: MediaStream | null;
+  /** When set, TTS playback levels drive the meter (lip-sync–style motion from real audio). */
+  playbackAnalyserRef?: MutableRefObject<AnalyserNode | null>;
   className?: string;
 };
 
 /**
- * Circular avatar with a small canvas level meter: live mic bins while recording,
- * soft animated bars while speaking (smooth under load without extra WebAudio wiring).
+ * Circular avatar with a canvas level meter: live mic while recording,
+ * frequency bins from assistant playback while speaking (falls back to soft motion if Web Audio unavailable).
  */
-export default function AvatarVoice({ speaking, recording, mediaStream, className = "" }: Props) {
+export default function AvatarVoice({
+  speaking,
+  recording,
+  mediaStream,
+  playbackAnalyserRef,
+  className = "",
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -87,6 +95,17 @@ export default function AvatarVoice({ speaking, recording, mediaStream, classNam
           for (let j = 0; j < step; j++) s += data[i * step + j] ?? 0;
           levels.push(s / step / 255);
         }
+      } else if (speaking && playbackAnalyserRef?.current) {
+        const pb = playbackAnalyserRef.current;
+        const bins = pb.frequencyBinCount;
+        const playData = new Uint8Array(bins);
+        pb.getByteFrequencyData(playData);
+        const step = Math.max(1, Math.floor(playData.length / nBars));
+        for (let i = 0; i < nBars; i++) {
+          let s = 0;
+          for (let j = 0; j < step; j++) s += playData[i * step + j] ?? 0;
+          levels.push(s / step / 255);
+        }
       } else if (speaking) {
         const t = Date.now() / 180;
         for (let i = 0; i < nBars; i++) {
@@ -115,7 +134,7 @@ export default function AvatarVoice({ speaking, recording, mediaStream, classNam
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-  }, [speaking, recording, mediaStream]);
+  }, [speaking, recording, mediaStream, playbackAnalyserRef]);
 
   return (
     <div className={`flex flex-col items-center ${className}`}>
@@ -125,7 +144,9 @@ export default function AvatarVoice({ speaking, recording, mediaStream, classNam
         }`}
         aria-hidden
       >
-        <span className="pointer-events-none select-none text-5xl opacity-90">🗣️</span>
+        <span className="pointer-events-none select-none text-5xl opacity-90" aria-hidden>
+          🗣️
+        </span>
         <canvas
           ref={canvasRef}
           width={160}
@@ -133,8 +154,8 @@ export default function AvatarVoice({ speaking, recording, mediaStream, classNam
           className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md bg-black/15 dark:bg-black/30"
         />
       </div>
-      <p className="mt-4 text-center text-xs text-zinc-500 dark:text-zinc-400">
-        Waveform: live mic while recording; motion sync while assistant audio plays.
+      <p className="mt-4 max-w-[200px] text-center text-xs text-zinc-500 dark:text-zinc-400">
+        Avatar: mic + TTS level meter (Web Audio). Not a 3D talking head.
       </p>
     </div>
   );

@@ -155,7 +155,7 @@ def main() -> int:
     try:
         inv9 = post_invoke(
             "book_appointment",
-            {"name": "X", "phone": phone, "date": "YYYY-MM-DD", "time": "11:00"},
+            {"name": "Valid Name", "phone": phone, "date": "YYYY-MM-DD", "time": "11:00"},
         )
         imsg = ((inv9 or {}).get("error") or {}).get("message") or ""
         ok9 = isinstance(inv9, dict) and inv9.get("success") is False and (

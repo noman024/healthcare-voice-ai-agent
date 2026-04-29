@@ -42,11 +42,18 @@ def process_text_message(
     message: str,
     session_id: str,
     return_speech: bool,
+    conversation_id: str | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """Text in → agent turn → optional Speech-Out as base64 WAV."""
     msg = message.strip()
-    agent = run_turn(conn, user_message=msg, session_id=session_id, client=client)
+    agent = run_turn(
+        conn,
+        user_message=msg,
+        session_id=session_id,
+        persistence_session_id=conversation_id,
+        client=client,
+    )
     audio_b64, _tts_ok = maybe_tts_base64(agent["final_response"], want_audio=return_speech)
     return {
         "mode": "text",
@@ -67,6 +74,7 @@ def process_audio_bytes(
     session_id: str,
     language: str | None,
     return_speech: bool,
+    conversation_id: str | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """In-memory audio → STT → agent → optional Speech-Out (same JSON as multipart /conversation)."""
@@ -96,7 +104,13 @@ def process_audio_bytes(
             "audio_byte_len": audio_byte_len,
         }
 
-    agent = run_turn(conn, user_message=text, session_id=session_id, client=client)
+    agent = run_turn(
+        conn,
+        user_message=text,
+        session_id=session_id,
+        persistence_session_id=conversation_id,
+        client=client,
+    )
     audio_b64, _ = maybe_tts_base64(agent["final_response"], want_audio=return_speech)
     return {
         "mode": "audio",
@@ -118,6 +132,7 @@ def process_audio_message(
     session_id: str,
     language: str | None,
     return_speech: bool,
+    conversation_id: str | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """Audio file → STT → agent → optional Speech-Out as base64 WAV."""
@@ -130,6 +145,7 @@ def process_audio_message(
         session_id=session_id,
         language=language,
         return_speech=return_speech,
+        conversation_id=conversation_id,
         client=client,
     )
 
@@ -142,6 +158,7 @@ def iter_chunked_audio_turn_events(
     session_id: str,
     language: str | None,
     return_speech: bool,
+    conversation_id: str | None = None,
     client: httpx.Client | None = None,
 ) -> Iterator[dict[str, Any]]:
     """
@@ -187,7 +204,13 @@ def iter_chunked_audio_turn_events(
         }
         return
 
-    for ev in iter_turn_events(conn, user_message=text, session_id=session_id, client=client):
+    for ev in iter_turn_events(
+        conn,
+        user_message=text,
+        session_id=session_id,
+        persistence_session_id=conversation_id,
+        client=client,
+    ):
         if ev.get("type") != "done":
             yield ev
             continue

@@ -23,6 +23,15 @@ def _force_whisper_cpu_in_tests(monkeypatch):
     reset_whisper_model()
 
 
+@pytest.fixture(autouse=True)
+def _clear_booking_gate_between_tests():
+    from app.session_booking_gate import clear_booking_gate_for_tests
+
+    clear_booking_gate_for_tests()
+    yield
+    clear_booking_gate_for_tests()
+
+
 @pytest.fixture
 def db_conn(tmp_path):
     path = tmp_path / "test.db"

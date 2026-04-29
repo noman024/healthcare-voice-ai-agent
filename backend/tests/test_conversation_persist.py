@@ -55,6 +55,39 @@ def test_runner_hydrates_from_db_between_turns(db_conn, monkeypatch):
     assert "first user line" in planners[-1]
 
 
+def test_conversation_id_merges_transcript_across_agent_session_ids(db_conn, monkeypatch):
+    """Stable conversation_id persists under one key while session_id can change (e.g. phone handoff)."""
+    monkeypatch.setenv("CONVERSATION_PERSIST", "1")
+
+    def fake_chat(messages, *, client=None, timeout_s=None, response_format=None, model=None):
+        if response_format == "json":
+            return '{"intent":"t","tool":"none","arguments":{},"response":"draft"}'
+        return "Assistant reply."
+
+    monkeypatch.setattr(ollama_mod, "ollama_chat", fake_chat)
+
+    from app.agent.runner import run_turn
+
+    run_turn(
+        db_conn,
+        user_message="hello",
+        session_id="label-a",
+        persistence_session_id="room-1",
+    )
+    clear_session_memory_for_tests()
+    run_turn(
+        db_conn,
+        user_message="follow up",
+        session_id="+15550009999",
+        persistence_session_id="room-1",
+    )
+
+    m = SessionMemory()
+    hydrate_session_memory(m, db_conn, "room-1")
+    text = "\n".join(str(msg.get("content", "")) for msg in m.as_ollama_messages())
+    assert "hello" in text and "follow up" in text
+
+
 def test_turn_prunes_extra_rows(db_conn, monkeypatch):
     monkeypatch.setenv("CONVERSATION_PERSIST", "1")
     monkeypatch.setenv("CONVERSATION_PERSIST_MAX_MESSAGES", "1")
