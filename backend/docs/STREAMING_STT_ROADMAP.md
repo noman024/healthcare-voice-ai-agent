@@ -31,6 +31,7 @@ binary audio buffer → bytes_stt.transcribe_audio_bytes → plain text → iter
 ### Phase B — Server-side segmentation (still batch STT per segment)
 
 - Accumulate PCM/WebM server-side; apply **energy/VAD gate** (e.g. `webrtcvad`, Silero, or faster-whisper `vad_filter` over sliding windows).
+- **`WHISPER_VAD_FILTER=1`** enables faster-whisper’s built-in **`vad_filter`** on every `transcribe()` (see [`app/audio/stt.py`](app/audio/stt.py)) — same REST/WS contracts; trims silence before decoding.
 - Produce **multiple transcripts** per WebSocket session **or** concatenate segments before one agent turn.
 
 **Compatibility:** Prefer emitting optional WebSocket events (`stt_segment`) only when `action=start` includes `"segment_mode": true`. Leave existing clients on single-transcript behavior.

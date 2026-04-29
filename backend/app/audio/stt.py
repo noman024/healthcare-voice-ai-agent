@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 from threading import Lock
-from typing import Union
+from typing import Any, Union
 
 from faster_whisper import WhisperModel
 
@@ -112,6 +112,14 @@ def get_whisper_model() -> WhisperModel:
         return _model
 
 
+def _vad_filter_enabled() -> bool:
+    """When true, pass ``vad_filter=True`` to faster-whisper (silence trimming / fewer hallucinations)."""
+    v = os.getenv("WHISPER_VAD_FILTER", "").strip().lower()
+    if not v:
+        return False
+    return v in ("1", "true", "yes", "on")
+
+
 def transcribe_path(
     path: str | Path,
     *,
@@ -126,7 +134,10 @@ def transcribe_path(
     beam = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
 
     def _run(model: WhisperModel) -> tuple[str, str | None]:
-        segments, info = model.transcribe(str(path), language=lang, beam_size=beam)
+        transcribe_kw: dict[str, Any] = {"language": lang, "beam_size": beam}
+        if _vad_filter_enabled():
+            transcribe_kw["vad_filter"] = True
+        segments, info = model.transcribe(str(path), **transcribe_kw)
         parts: list[str] = []
         for seg in segments:
             parts.append(seg.text)

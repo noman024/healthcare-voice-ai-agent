@@ -10,7 +10,7 @@ Roadmap gaps (streaming ASR, multi-process sessions, prod LiveKit ops) → **REA
 
 | Check | Result |
 |-------|--------|
-| `pytest tests/` | **59 passed** |
+| `pytest tests/` | **61 passed** |
 | `scripts/e2e_integration_real.sh` | **OK** (requires live API + Ollama + Piper + Whisper on `:8000`) |
 | Benchmark | See table below (`--rounds 5 --concurrent 16`) |
 

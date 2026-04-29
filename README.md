@@ -196,6 +196,7 @@ Rough selection:
 | `WHISPER_NUM_WORKERS` | Optional CTranslate2 worker threads (default: **one per visible GPU** when on CUDA, capped by `WHISPER_MAX_WORKERS`, for concurrent `transcribe()`; override to tune throughput). |
 | `WHISPER_MAX_WORKERS` | Cap for auto `WHISPER_NUM_WORKERS` on GPU (default `8`). |
 | `WHISPER_CPU_NUM_WORKERS` | CPU / fallback worker count (default `1`). |
+| `WHISPER_VAD_FILTER` | Set `1` / `true` / `yes` / `on` to enable faster-whisper **`vad_filter`** on transcribe (trims silence; can change timings vs default off). |
 | `CUDA_HOME` / `CUDA_LIBRARY_PATH` | Prepends all common **`lib64`** / **`targets/x86_64-linux/lib`** paths (CUDA 12 and 13 layouts) to **`LD_LIBRARY_PATH`**. CTranslate2 wheels often require **`libcublas.so.12`**; if only CUDA 13 (**.so.13**) is installed, either add a **CUDA 12 compatibility** runtime or use **`WHISPER_DEVICE=cpu`**. |
 | `OLLAMA_INFER_DEVICE` | `auto` (default): request max GPU layers from Ollama (`num_gpu=-1`). `cpu` sends `num_gpu=0`. |
 | `OLLAMA_NUM_GPU_LAYERS` | Layer offload count for Ollama (default **-1** = as many as the server will place on GPU). |
