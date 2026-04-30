@@ -6,6 +6,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+import time
 from typing import Any
 
 from fastapi import File, HTTPException, UploadFile
@@ -46,7 +47,7 @@ def avatar_reference_image_handler() -> FileResponse:
 
 async def avatar_lipsync_post_handler(audio: UploadFile = File(...)) -> Response:
     from app.musetalk.config import load_musetalk_settings, musetalk_status
-    from app.musetalk.inference_bridge import run_lipsync_to_mp4_locked
+    from app.musetalk.inference_bridge import musetalk_timing_log_enabled, run_lipsync_to_mp4_locked
 
     s = load_musetalk_settings()
     if not s.enabled:
@@ -57,7 +58,9 @@ async def avatar_lipsync_post_handler(audio: UploadFile = File(...)) -> Response
             status_code=503,
             detail=st.get("hint") or "MuseTalk not ready — install weights and reference image.",
         )
+    t0 = time.perf_counter()
     data = await audio.read()
+    t1 = time.perf_counter()
     if not data:
         raise HTTPException(status_code=422, detail="Empty audio upload.")
     try:
@@ -65,4 +68,14 @@ async def avatar_lipsync_post_handler(audio: UploadFile = File(...)) -> Response
     except RuntimeError as e:
         logger.warning("musetalk_inference_failed %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
+    t2 = time.perf_counter()
+    if musetalk_timing_log_enabled():
+        logger.info(
+            "musetalk_http upload_ms=%.1f infer_total_ms=%.1f wall_ms=%.1f wav_b=%d mp4_b=%d",
+            (t1 - t0) * 1000.0,
+            (t2 - t1) * 1000.0,
+            (t2 - t0) * 1000.0,
+            len(data),
+            len(mp4),
+        )
     return Response(content=mp4, media_type="video/mp4")

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -15,6 +16,11 @@ import yaml
 from app.musetalk.config import MuseTalkSettings, load_musetalk_settings
 
 logger = logging.getLogger(__name__)
+
+
+def musetalk_timing_log_enabled() -> bool:
+    return os.getenv("MUSETALK_TIMING_LOG", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 _gpu_locks: dict[int, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -82,6 +88,7 @@ def run_lipsync_to_mp4(
     use_saved = pkl.is_file()
 
     job = uuid.uuid4().hex[:16]
+    t_wall0 = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix=f"musetalk_{job}_") as td:
         td_path = Path(td)
         wav_path = td_path / f"{job}.wav"
@@ -143,12 +150,23 @@ def run_lipsync_to_mp4(
 
         env = os.environ.copy()
         env["PYTHONPATH"] = str(s.root) + os.pathsep + env.get("PYTHONPATH", "")
+        # Speed: cuDNN autotune fixed-size convs (safe for stable inference shapes).
+        if os.getenv("MUSETALK_TORCH_CUDNN_BENCHMARK", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            env.setdefault("TORCH_CUDNN_BENCHMARK", "1")
 
+        t_prep_done = time.perf_counter()
         logger.info(
-            "musetalk_start job=%s use_saved_coord=%s ref=%s",
+            "musetalk_start job=%s use_saved_coord=%s ref=%s gpu=%s batch=%s",
             job,
             use_saved,
             ref,
+            gid,
+            s.batch_size,
         )
         try:
             proc = subprocess.run(
@@ -161,6 +179,8 @@ def run_lipsync_to_mp4(
             )
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"MuseTalk timed out after {s.timeout_sec}s") from e
+
+        t_subprocess_done = time.perf_counter()
 
         err_full = (proc.stderr or b"").decode("utf-8", errors="replace")
         if proc.returncode != 0:
@@ -187,22 +207,52 @@ def run_lipsync_to_mp4(
         sub = out_dir / f"{stem}_{job}"
         if sub.is_dir():
             shutil.rmtree(sub, ignore_errors=True)
+        t_end = time.perf_counter()
+        if musetalk_timing_log_enabled():
+            prep_ms = (t_prep_done - t_wall0) * 1000.0
+            sub_ms = (t_subprocess_done - t_prep_done) * 1000.0
+            tail_ms = (t_end - t_subprocess_done) * 1000.0
+            logger.info(
+                "musetalk_latency job=%s gpu=%s prep_ms=%.1f subprocess_ms=%.1f post_ms=%.1f total_ms=%.1f "
+                "wav_b=%d mp4_b=%d use_saved_coord=%s batch=%s",
+                job,
+                gid,
+                prep_ms,
+                sub_ms,
+                tail_ms,
+                (t_end - t_wall0) * 1000.0,
+                len(wav_bytes),
+                len(data),
+                use_saved,
+                s.batch_size,
+            )
         return data
 
 
 def run_lipsync_to_mp4_locked(wav_bytes: bytes) -> bytes:
-    """Per-GPU serialization: multiple GPUs can run different jobs in parallel; one GPU = one job at a time."""
+    """Schedule inference on a GPU; coordinate file creation is serialized only until the face cache exists.
+
+    After ``{stem}.pkl`` exists (``--use_saved_coord``), jobs on different GPUs no longer share a global
+    reference lock — previously every request serialized on ``_get_ref_stem_lock``, negating multi-GPU.
+    """
     s = load_musetalk_settings()
     fl = os.getenv("MUSETALK_SINGLE_FLIGHT", "1").strip().lower() in ("1", "true", "yes", "on")
     chosen = _pick_gpu_round_robin(s.gpu_ids)
     ref = s.reference_image
     stem = (ref.stem if ref and ref.name else "reference") or "reference"
+    coord_cache_path = s.cache_dir / f"{stem}.pkl"
+    coord_ready = coord_cache_path.is_file()
 
     def _run() -> bytes:
         return run_lipsync_to_mp4(wav_bytes, settings=s, gpu_id=chosen)
 
     if not fl:
+        if coord_ready:
+            return _run()
         with _get_ref_stem_lock(stem):
+            return _run()
+    if coord_ready:
+        with _get_gpu_lock(chosen):
             return _run()
     with _get_ref_stem_lock(stem):
         with _get_gpu_lock(chosen):

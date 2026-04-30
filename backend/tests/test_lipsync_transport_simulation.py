@@ -16,6 +16,7 @@ import wave
 
 import pytest
 
+import app.conversation.finalize_audio as finalize_audio_mod
 import app.conversation.pipeline as pipeline_mod
 
 
@@ -56,7 +57,7 @@ def test_ws_conversation_audio_done_includes_wav_then_lipsync_router_accepts_upl
             "mode": "audio",
         }
 
-    monkeypatch.setattr(pipeline_mod, "iter_chunked_audio_turn_events", fake_iter)
+    monkeypatch.setattr(finalize_audio_mod, "iter_chunked_audio_turn_events", fake_iter)
 
     with api_client.websocket_connect("/ws/conversation_audio") as ws:
         ws.send_json(

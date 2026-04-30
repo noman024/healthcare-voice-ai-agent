@@ -134,9 +134,9 @@ def load_musetalk_settings() -> MuseTalkSettings:
         version = "v15"
     use_f16 = os.getenv("MUSETALK_FLOAT16", "1").strip().lower() in ("1", "true", "yes", "on")
     try:
-        bs = max(1, int(os.getenv("MUSETALK_BATCH_SIZE", "4").strip() or "4"))
+        bs = max(1, int(os.getenv("MUSETALK_BATCH_SIZE", "8").strip() or "8"))
     except ValueError:
-        bs = 4
+        bs = 8
     ff = _resolve_ffmpeg_dir(os.getenv("MUSETALK_FFMPEG_PATH"))
     if ff is None:
         ff = _default_ffmpeg_dir()
