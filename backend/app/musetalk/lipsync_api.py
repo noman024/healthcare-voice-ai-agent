@@ -64,10 +64,35 @@ async def avatar_lipsync_post_handler(audio: UploadFile = File(...)) -> Response
     if not data:
         raise HTTPException(status_code=422, detail="Empty audio upload.")
     try:
-        mp4 = await asyncio.to_thread(run_lipsync_to_mp4_locked, data)
-    except RuntimeError as e:
-        logger.warning("musetalk_inference_failed %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        max_attempts = max(1, int(os.getenv("MUSETALK_HTTP_RETRIES", "3").strip() or "3"))
+    except ValueError:
+        max_attempts = 3
+    try:
+        delay = float(os.getenv("MUSETALK_HTTP_RETRY_DELAY_SEC", "0.75").strip() or "0.75")
+    except ValueError:
+        delay = 0.75
+
+    last_err: RuntimeError | None = None
+    mp4: bytes | None = None
+    for attempt in range(max_attempts):
+        try:
+            mp4 = await asyncio.to_thread(run_lipsync_to_mp4_locked, data)
+            last_err = None
+            break
+        except RuntimeError as e:
+            last_err = e
+            logger.warning(
+                "musetalk_inference_failed attempt=%s/%s err=%s",
+                attempt + 1,
+                max_attempts,
+                e,
+            )
+            if attempt + 1 >= max_attempts:
+                raise HTTPException(status_code=500, detail=str(e)) from e
+            await asyncio.sleep(delay)
+
+    if mp4 is None:
+        raise HTTPException(status_code=500, detail=str(last_err) if last_err else "MuseTalk failed") from last_err
     t2 = time.perf_counter()
     if musetalk_timing_log_enabled():
         logger.info(

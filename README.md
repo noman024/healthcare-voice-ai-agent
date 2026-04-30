@@ -1,7 +1,11 @@
 # Voice Healthcare Agent
 
-**Author:** MD Mutasim Billah Noman
+**Author:** MD Mutasim Billah Noman  
 **Updated on:** 30 April 2026
+
+**Repository:** [github.com/noman024/healthcare-voice-ai-agent](https://github.com/noman024/healthcare-voice-ai-agent) · **Recorded demo:** [Google Drive (screen recording)](https://drive.google.com/file/d/1EjC-mOq7SGfCIHp6PErq0N9HIl1oRbRY/view?usp=sharing)
+
+Public **live** links are whatever you tunnel (for example ngrok to port **3000**). Free-tier tunnel hostnames usually **change each session** unless you use a reserved domain—share **`/call`** on the URL ngrok (or your tunnel) prints; don’t treat an old hostname as permanent.
 
 Monorepo: **FastAPI** backend (SQLite, Ollama, faster-whisper, Piper) and **Next.js 14** UI at `[/call](frontend/app/call/page.tsx)`.
 
@@ -168,7 +172,7 @@ STOP_LIVEKIT_DOCKER=1 LIVEKIT_DOCKER_SUDO=1 ./scripts/stop-full-stack-nohup.sh  
 
 **Logs:** `tail -f logs/ollama.nohup.log` (and `api`, `frontend`, `voice-worker`, `musetalk`).
 
-**MuseTalk / `POST /avatar/lipsync` 500:** Check **`logs/musetalk.nohup.log`**, `MUSETALK_*` and `MUSETALK_SERVICE_URL` in `backend/.env`, and `GET http://127.0.0.1:8000/avatar/lipsync/status` while FastAPI is running. Ngrok only forwards to Next; the API still runs the lip-sync pipeline on the host.
+**MuseTalk / `POST /avatar/lipsync` 500:** Check **`logs/musetalk.nohup.log`** (and **`MUSETALK_TIMING_LOG=1`** for timing), `MUSETALK_*` / `MUSETALK_SERVICE_URL` in `backend/.env`, and `GET http://127.0.0.1:8000/avatar/lipsync/status` while FastAPI is running. **Intermittent** failures are often **GPU OOM** or one bad clip—try lowering **`MUSETALK_BATCH_SIZE`**, ensure **`MUSETALK_SINGLE_FLIGHT=1`** under load, and increase **`MUSETALK_HTTP_RETRIES`** / **`MUSETALK_HTTP_RETRY_DELAY_SEC`** on the MuseTalk service (the handler retries inference before returning 500). If the **main API** proxies to **:8001**, also check **`MUSETALK_PROXY_TIMEOUT_SEC`**. Ngrok only forwards to Next; lip-sync still runs on the host.
 
 **Ngrok (separate from nohup):** [`run-ngrok-tunnel.sh`](scripts/run-ngrok-tunnel.sh) runs in the **foreground**; **Ctrl+C** stops the tunnel. `stop-full-stack-nohup.sh` does **not** stop ngrok—the **public hostname can still resolve** until ngrok exits, but with Next on **:3000** stopped you normally get **502** / empty responses, not your app. Use **`curl -s http://127.0.0.1:4040/api/tunnels`** while ngrok runs to see the URL. To stop ngrok without the UI terminal, use e.g. `pkill -f 'ngrok http 3000'` only if you have no other tunnels. Free tier: each run usually gets a **new** URL unless you use a reserved domain.
 
@@ -250,7 +254,7 @@ End-to-end / production path for **video** lipsync after Piper TTS on routes tha
   ```
    In `backend/.env` on the machine that runs the **main** API, set `MUSETALK_SERVICE_URL=http://127.0.0.1:8001` so `/avatar/lipsync` and `/avatar/lipsync/status` are forwarded there. The MuseTalk process uses the same `backend/.env`; set `MUSETALK_ENABLED=1` there (and `MUSETALK_PYTHON`, weights paths, etc.). If you omit `MUSETALK_SERVICE_URL`, the main API runs inference in-process instead.
 8. **Enable** — `MUSETALK_ENABLED=1` on the **MuseTalk service**, `NEXT_PUBLIC_MUSETALK_ENABLED=1`, and optionally `NEXT_PUBLIC_MUSETALK_API_URL=http://127.0.0.1:8001` so the browser talks to the lip-sync service directly (CORS is enabled on `service_app`). Check `GET http://localhost:8000/avatar/lipsync/status` (proxied) or `GET http://localhost:8001/avatar/lipsync/status` (direct) for `{ "ready": true, "ffmpeg": true }`.
-9. **API** — `POST /avatar/lipsync` (multipart field `audio`, WAV) returns MP4. Inference is **single-flight** per GPU (`MUSETALK_SINGLE_FLIGHT`, default on).
+9. **API** — `POST /avatar/lipsync` (multipart field `audio`, WAV) returns MP4. Inference is **single-flight** per GPU (`MUSETALK_SINGLE_FLIGHT`, default on). Transient inference errors **retry** (`MUSETALK_HTTP_RETRIES`, `MUSETALK_HTTP_RETRY_DELAY_SEC`) before the handler returns 500.
 
 ## Database (SQLite)
 
