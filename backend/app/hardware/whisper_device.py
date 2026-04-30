@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import os
-from typing import Union
 
 from app.hardware.cuda import cuda_gpu_count
 
 
-def whisper_runtime_settings() -> tuple[str, Union[int, list[int]], str]:
+def whisper_runtime_settings() -> tuple[str, int | list[int], str]:
     """
     Resolve (device, device_index, compute_type) for faster-whisper / CTranslate2.
 
@@ -43,7 +42,7 @@ def whisper_runtime_settings() -> tuple[str, Union[int, list[int]], str]:
             ctype = ctype_env or "int8"
             return "cpu", 0, ctype
         ctype = ctype_env or "float16"
-        device_index: Union[int, list[int]] = idx[0] if len(idx) == 1 else idx
+        device_index: int | list[int] = idx[0] if len(idx) == 1 else idx
         return "cuda", device_index, ctype
 
     # auto

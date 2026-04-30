@@ -5,8 +5,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
-import time
 import sqlite3
+import time
 from collections.abc import Iterator
 from typing import Any
 

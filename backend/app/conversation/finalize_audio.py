@@ -6,9 +6,9 @@ and reuse the same event stream as :func:`~app.conversation.pipeline.iter_chunke
 
 from __future__ import annotations
 
-from typing import Any, Iterator
-
 import sqlite3
+from collections.abc import Iterator
+from typing import Any
 
 from app.conversation.pipeline import iter_chunked_audio_turn_events
 

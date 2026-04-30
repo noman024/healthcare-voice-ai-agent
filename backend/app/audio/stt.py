@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 from threading import Lock
-from typing import Any, Union
+from typing import Any
 
 from faster_whisper import WhisperModel
 
@@ -44,7 +44,7 @@ def _force_whisper_cpu_env() -> None:
     os.environ["WHISPER_COMPUTE_TYPE"] = "int8"
 
 
-def _whisper_num_workers(device: str, device_index: Union[int, list[int]]) -> int:
+def _whisper_num_workers(device: str, device_index: int | list[int]) -> int:
     """
     Worker threads inside CTranslate2 for concurrent transcribe() calls.
     With multiple GPUs, default matches GPU count (capped) so parallel requests can use them.

@@ -2,9 +2,9 @@ import json
 
 import httpx
 
-from app.session_booking_gate import register_offered_slots, register_verified_phone
 from app.agent.memory import clear_session_memory_for_tests, get_session_memory
 from app.agent.runner import iter_turn_events, run_turn
+from app.session_booking_gate import register_offered_slots, register_verified_phone
 from app.tools import slots
 
 

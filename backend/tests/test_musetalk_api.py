@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 
 def test_avatar_lipsync_status_disabled(api_client, monkeypatch):
     monkeypatch.delenv("MUSETALK_ENABLED", raising=False)

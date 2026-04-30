@@ -18,8 +18,9 @@ import struct
 import sys
 import time
 import wave
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 

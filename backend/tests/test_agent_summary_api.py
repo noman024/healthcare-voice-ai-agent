@@ -3,8 +3,11 @@
 import sqlite3
 
 import app.llm.ollama as ollama_mod
-
-from app.agent.memory import clear_session_memory_for_tests, get_session_memory, get_session_transcript
+from app.agent.memory import (
+    clear_session_memory_for_tests,
+    get_session_memory,
+    get_session_transcript,
+)
 
 
 def test_agent_summary_no_history_returns_422(api_client):

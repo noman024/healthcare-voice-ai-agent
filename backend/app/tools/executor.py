@@ -4,8 +4,8 @@ import logging
 import sqlite3
 from typing import Any
 
-from app.session_booking_gate import assert_booking_gate_ok
 from app.db import appointments as appt_repo
+from app.session_booking_gate import assert_booking_gate_ok
 from app.tools import slots
 from app.tools.validation import (
     ToolValidationError,

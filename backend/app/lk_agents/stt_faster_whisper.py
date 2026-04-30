@@ -6,8 +6,7 @@ import asyncio
 import os
 
 from livekit import rtc
-from livekit.agents import stt
-from livekit.agents import utils
+from livekit.agents import stt, utils
 from livekit.agents.language import LanguageCode
 from livekit.agents.stt import SpeechData, SpeechEvent, SpeechEventType, STTCapabilities
 from livekit.agents.types import NOT_GIVEN, APIConnectOptions, NotGivenOr

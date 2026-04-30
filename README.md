@@ -52,7 +52,31 @@ Some specs reference **Deepgram** (STT), **Cartesia** (TTS), and **Tavus / Beyon
 | `[backend/app/lk_agents/](backend/app/lk_agents/)`       | LiveKit worker: `voice_agent.py`, STT/TTS adapters, publish/transcript helpers                                                                                           |
 | `[backend/app/musetalk/](backend/app/musetalk/)`         | Optional lip-sync API and inference bridge                                                                                                                               |
 | `[backend/app/db/](backend/app/db/)`                     | SQLite schema and repositories                                                                                                                                           |
-| `[frontend/app/call/](frontend/app/call/)`               | `/call` UI: `[page.tsx](frontend/app/call/page.tsx)`, shared `[callUtils.ts](frontend/app/call/callUtils.ts)` / `[audioPlayback.ts](frontend/app/call/audioPlayback.ts)` |
+| `[frontend/app/call/](frontend/app/call/)`               | `/call` UI: [`page.tsx`](frontend/app/call/page.tsx), [`components/`](frontend/app/call/components/), [`hooks/`](frontend/app/call/hooks/), [`callUtils.ts`](frontend/app/call/callUtils.ts), [`audioPlayback.ts`](frontend/app/call/audioPlayback.ts) |
+
+### Frontend `/call` layout
+
+| Path | Role |
+|------|------|
+| [`frontend/app/call/page.tsx`](frontend/app/call/page.tsx) | Composes hooks, transports (REST/WebSocket/LiveKit), and layout |
+| [`frontend/app/call/components/`](frontend/app/call/components/) | Presentational UI (header, session strip, stage, transcript column) |
+| [`frontend/app/call/hooks/`](frontend/app/call/hooks/) | Hooks such as conversation IDs and LiveKit room naming |
+| [`frontend/app/call/callUtils.ts`](frontend/app/call/callUtils.ts) | Pure helpers (API base URL, WebSocket base, WAV chunk merge, tool labels) |
+
+### OpenAPI
+
+With FastAPI running locally: [http://localhost:8000/docs](http://localhost:8000/docs) (interactive) and [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json) (schema).
+
+### Developer tooling and CI
+
+| Check | How |
+|-------|-----|
+| Python lint | In `backend/` after `pip install -r requirements-dev.txt`: run `ruff check .` ([`pyproject.toml`](backend/pyproject.toml)) |
+| Python tests | In `backend/`: `pytest` |
+| Frontend lint | In `frontend/`: `npm run lint` |
+| Frontend format | In `frontend/`: `npm run format` / `npm run format:check` (Prettier; ESLint uses `eslint-config-prettier`) |
+| Frontend unit tests | In `frontend/`: `npm run test` (Vitest) |
+| Continuous integration | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the above (plus `next build`) on push/PR |
 
 
 ## Prerequisites
@@ -146,7 +170,11 @@ Everything runs on your host; only **port 3000** needs a public URL. Next.js **r
 
 Use **`npm run dev`** / **`dev:demo`** for demos; WebSocket voice through `next start` is not supported here.
 
-If `next dev` errors with `Cannot find module './NNN.js'`, run `npm run dev:fresh` or `npm run clean && npm run dev`.
+**Next.js dev / `frontend/.next` (missing chunks, tunnel 500/404, “missing required error components”):**
+
+- **`Cannot find module './NNN.js'`** — from `frontend/`, run `npm run dev:fresh` or `npm run clean && npm run dev` (stop `next dev` before `clean` if the dev server is running; see below).
+- **Ngrok 500** on `/call` or `/_next/static/chunks/fallback/…` — usually a **corrupt `.next` cache**; from `frontend/`, `npm run clean`, restart **`npm run dev`** / **`dev:demo`**, hard-refresh. Keep **FastAPI on :8000** when using MuseTalk or `/avatar/*` rewrites.
+- **“Missing required error components” + ngrok 404 on `/call` + empty `.next` while `next dev` still runs** — almost always **`npm run clean`** or deleting `.next` **while** Next was still on port **3000**. Stop the frontend (`pkill -f "next dev"` or [`stop-full-stack-nohup.sh`](scripts/stop-full-stack-nohup.sh)), then start **`npm run dev`** / **`dev:demo`** again. Only clean `.next` when **no** `next dev` / `next start` is using that directory.
 
 ### Managing the nohup stack and ngrok
 

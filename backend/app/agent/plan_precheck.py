@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
-
 from datetime import datetime
+from typing import Any
 
 from app.llm.schema import AgentPlan
 from app.tools.executor import (
@@ -18,9 +17,9 @@ from app.tools.executor import (
     TOOL_RETRIEVE_APPOINTMENTS,
 )
 from app.tools.validation import (
-    ToolValidationError,
     _DATE_RE,
     _TIME_RE,
+    ToolValidationError,
     calendar_today,
     normalize_phone,
     person_name_precheck_ok,

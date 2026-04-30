@@ -6,7 +6,11 @@ import pytest
 
 from app.agent.plan_coerce import coerce_agent_plan
 from app.llm.schema import AgentPlan
-from app.tools.executor import TOOL_BOOK_APPOINTMENT, TOOL_CANCEL_APPOINTMENT, TOOL_MODIFY_APPOINTMENT
+from app.tools.executor import (
+    TOOL_BOOK_APPOINTMENT,
+    TOOL_CANCEL_APPOINTMENT,
+    TOOL_MODIFY_APPOINTMENT,
+)
 
 
 def mk(**kwargs) -> AgentPlan:

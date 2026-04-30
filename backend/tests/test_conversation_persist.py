@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-import app.llm.ollama as ollama_mod
 import pytest
 
+import app.llm.ollama as ollama_mod
 from app.agent.memory import SessionMemory, clear_session_memory_for_tests
 from app.db.conversation_messages import hydrate_session_memory, persist_exchange
 

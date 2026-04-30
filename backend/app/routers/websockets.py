@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import queue
-import threading
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.routers.ws_streaming import send_blocking_iterator_over_websocket
+
 router = APIRouter(tags=["websockets"])
-logger = logging.getLogger(__name__)
 
 
 @router.websocket("/ws/agent")
@@ -50,29 +47,17 @@ async def ws_agent(websocket: WebSocket) -> None:
             cid_raw = payload.get("conversation_id")
             cid = str(cid_raw).strip() if cid_raw not in (None, "") else None
 
-            q: queue.Queue = queue.Queue(maxsize=64)
-
-            def producer() -> None:
-                try:
-                    for ev in iter_turn_events(
-                        conn,
-                        user_message=msg,
-                        session_id=sid,
-                        persistence_session_id=cid,
-                    ):
-                        q.put(ev)
-                except Exception as e:
-                    logger.exception("ws_agent_turn_failed")
-                    q.put({"type": "error", "message": str(e)})
-                finally:
-                    q.put(None)
-
-            threading.Thread(target=producer, daemon=True).start()
-            while True:
-                ev = await asyncio.to_thread(q.get)
-                if ev is None:
-                    break
-                await websocket.send_json(ev)
+            await send_blocking_iterator_over_websocket(
+                websocket,
+                iter_turn_events(
+                    conn,
+                    user_message=msg,
+                    session_id=sid,
+                    persistence_session_id=cid,
+                ),
+                queue_maxsize=64,
+                log_event="ws_agent_turn_failed",
+            )
     except WebSocketDisconnect:
         return
 
@@ -135,32 +120,20 @@ async def ws_conversation_audio(websocket: WebSocket) -> None:
                         continue
                     audio = bytes(buf)
 
-                    aq: queue.Queue = queue.Queue(maxsize=128)
-
-                    def producer() -> None:
-                        try:
-                            for ev in iter_finalize_batch_turn_events(
-                                conn,
-                                audio_bytes=audio,
-                                file_suffix=str(meta.get("file_extension") or ".webm"),
-                                session_id=str(meta.get("session_id") or "default"),
-                                language=meta.get("language"),
-                                return_speech=bool(meta.get("return_speech", True)),
-                                conversation_id=meta.get("conversation_id"),
-                            ):
-                                aq.put(ev)
-                        except Exception as e:
-                            logger.exception("ws_conversation_audio_failed")
-                            aq.put({"type": "error", "message": str(e)})
-                        finally:
-                            aq.put(None)
-
-                    threading.Thread(target=producer, daemon=True).start()
-                    while True:
-                        ev = await asyncio.to_thread(aq.get)
-                        if ev is None:
-                            break
-                        await websocket.send_json(ev)
+                    await send_blocking_iterator_over_websocket(
+                        websocket,
+                        iter_finalize_batch_turn_events(
+                            conn,
+                            audio_bytes=audio,
+                            file_suffix=str(meta.get("file_extension") or ".webm"),
+                            session_id=str(meta.get("session_id") or "default"),
+                            language=meta.get("language"),
+                            return_speech=bool(meta.get("return_speech", True)),
+                            conversation_id=meta.get("conversation_id"),
+                        ),
+                        queue_maxsize=128,
+                        log_event="ws_conversation_audio_failed",
+                    )
                     continue
 
                 await websocket.send_json(

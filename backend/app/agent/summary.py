@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -137,7 +137,7 @@ def build_agent_summary(
     )
     narrative, user_preferences = _parse_summary_json(raw_llm)
 
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     out: dict[str, Any] = {
         "session_id": (session_id.strip() or "default"),

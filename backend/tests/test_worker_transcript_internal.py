@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import app.llm.ollama as ollama_mod
-
 from app.agent.memory import clear_session_memory_for_tests
 
 

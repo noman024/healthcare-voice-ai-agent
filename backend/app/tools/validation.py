@@ -130,7 +130,6 @@ _BOOKING_NAME_BLOCKLIST = frozenset(
         "anonymous",
         "idk",
         "nope",
-        "unknown",
     }
 )
 

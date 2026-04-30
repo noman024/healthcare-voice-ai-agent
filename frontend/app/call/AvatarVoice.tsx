@@ -179,7 +179,9 @@ export default function AvatarVoice({
     const barTop = mouthBand + 4;
     const barH = h - barTop - 4;
     const nBars = 9;
-    const data = new Uint8Array(analyserRef.current ? analyserRef.current.frequencyBinCount : nBars);
+    const data = new Uint8Array(
+      analyserRef.current ? analyserRef.current.frequencyBinCount : nBars,
+    );
 
     const draw = () => {
       ctx.clearRect(0, 0, w, h);
@@ -216,8 +218,7 @@ export default function AvatarVoice({
         levels = Array(nBars).fill(0.08);
       }
 
-      const avg =
-        levels.length > 0 ? levels.reduce((a, b) => a + b, 0) / levels.length : 0.08;
+      const avg = levels.length > 0 ? levels.reduce((a, b) => a + b, 0) / levels.length : 0.08;
       const open = Math.min(1, avg * 1.35);
       const cx = w / 2;
       const cy = 7;
@@ -239,9 +240,7 @@ export default function AvatarVoice({
         const x = gap + i * (barW + gap);
         const y = barTop + barH - bh;
         ctx.fillStyle =
-          speaking || recording
-            ? "rgba(16, 185, 129, 0.85)"
-            : "rgba(113, 113, 122, 0.45)";
+          speaking || recording ? "rgba(16, 185, 129, 0.85)" : "rgba(113, 113, 122, 0.45)";
         ctx.beginPath();
         ctx.fillRect(x, y, barW, bh);
       }

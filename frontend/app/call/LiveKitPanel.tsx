@@ -1,6 +1,13 @@
 "use client";
 
-import { ParticipantEvent, ParticipantKind, Room, RoomEvent, Track, TrackEvent } from "livekit-client";
+import {
+  ParticipantEvent,
+  ParticipantKind,
+  Room,
+  RoomEvent,
+  Track,
+  TrackEvent,
+} from "livekit-client";
 import type {
   Participant,
   RemoteParticipant,
@@ -44,7 +51,10 @@ export function sanitizeLiveKitRoomName(room: string, fallback: string): string 
 }
 
 export function sanitizeLiveKitIdentity(ident: string, fallback: string): string {
-  const t = ident.trim().replace(/[^\w._-]/g, "-").slice(0, 128);
+  const t = ident
+    .trim()
+    .replace(/[^\w._-]/g, "-")
+    .slice(0, 128);
   return t || fallback;
 }
 
@@ -200,7 +210,8 @@ export default function LiveKitPanel({
 
         if (!stillCurrent()) return;
 
-        const assistantWebAudioMix = (process.env.NEXT_PUBLIC_LIVEKIT_WEB_AUDIO_MIX ?? "").trim() === "1";
+        const assistantWebAudioMix =
+          (process.env.NEXT_PUBLIC_LIVEKIT_WEB_AUDIO_MIX ?? "").trim() === "1";
         /** SDK default is false; Web Audio routing mutes `<audio>` and pipes via AudioContext—in practice that often yields silence if mixing fails. Opt in with NEXT_PUBLIC_LIVEKIT_WEB_AUDIO_MIX=1. */
         const r = new Room({
           webAudioMix: assistantWebAudioMix,
@@ -470,10 +481,7 @@ export default function LiveKitPanel({
 
         const agentWaitMs = Math.min(
           120_000,
-          Math.max(
-            25_000,
-            Number(process.env.NEXT_PUBLIC_LIVEKIT_AGENT_WAIT_MS ?? "") || 60_000,
-          ),
+          Math.max(25_000, Number(process.env.NEXT_PUBLIC_LIVEKIT_AGENT_WAIT_MS ?? "") || 60_000),
         );
 
         let idleTimer: number | undefined;

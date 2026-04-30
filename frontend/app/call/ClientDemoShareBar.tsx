@@ -80,8 +80,9 @@ export function ClientDemoShareBar() {
       ) : null}
       {showNgrokHint ? (
         <span className="text-emerald-200/60">
-          Tip: run <code className="rounded bg-black/30 px-1">ngrok http 3000</code> then reload — we read{" "}
-          <code className="rounded bg-black/30 px-1">127.0.0.1:4040</code> for the public URL.
+          Tip: run <code className="rounded bg-black/30 px-1">ngrok http 3000</code> then reload —
+          we read <code className="rounded bg-black/30 px-1">127.0.0.1:4040</code> for the public
+          URL.
         </span>
       ) : null}
     </div>

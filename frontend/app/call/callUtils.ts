@@ -125,8 +125,7 @@ export function toolExecutionStatusBanner(te: unknown): string | null {
 export function buildActivityFeed(result: AgentPayload): FeedItem[] {
   const out: FeedItem[] = [];
   const planRaw = result.plan;
-  const plan =
-    planRaw && typeof planRaw === "object" ? (planRaw as Record<string, unknown>) : null;
+  const plan = planRaw && typeof planRaw === "object" ? (planRaw as Record<string, unknown>) : null;
   const intent =
     typeof plan?.intent === "string"
       ? plan.intent

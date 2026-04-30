@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   TTS_BARGE_IN_GRACE_MS,
@@ -14,13 +13,11 @@ import {
   pcmRmsTimeDomain,
   playWavBase64,
 } from "./audioPlayback";
-import AvatarVoice from "./AvatarVoice";
-import type {
-  AgentPayload,
-  CallSummaryPayload,
-  FeedItem,
-  TranscriptEntry,
-} from "./callTypes";
+import { CallSessionStatusBar } from "./components/CallSessionStatusBar";
+import { CallStageSection } from "./components/CallStageSection";
+import { CallTopHeader } from "./components/CallTopHeader";
+import { CallTranscriptColumn } from "./components/CallTranscriptColumn";
+import type { AgentPayload, CallSummaryPayload, FeedItem, TranscriptEntry } from "./callTypes";
 import {
   buildActivityFeed,
   coerceNonNegInt,
@@ -34,11 +31,9 @@ import {
   suggestedSessionIdFromResult,
   toolExecutionStatusBanner,
 } from "./callUtils";
-import LiveKitPanel, {
-  DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME,
-  sanitizeLiveKitIdentity,
-  sanitizeLiveKitRoomName,
-} from "./LiveKitPanel";
+import { useConversationIds } from "./hooks/useConversationIds";
+import { useLiveKitRoomIdentity } from "./hooks/useLiveKitRoomIdentity";
+import LiveKitPanel from "./LiveKitPanel";
 import { ClientDemoShareBar } from "./ClientDemoShareBar";
 
 export default function CallPage() {
@@ -54,21 +49,9 @@ export default function CallPage() {
   }, [musetalkApiBase]);
   const wsBase = httpToWsBase(baseUrl);
 
-  /**
-   * Stable per-tab transcript + summary key (``conversation_id`` / persistence_session_id).
-   * Never reset when switching text ↔ voice or WebSocket ↔ LiveKit so SQLite mirrors stay consistent.
-   */
-  const [conversationId, setConversationId] = useState("");
-  /** Tool/booking session id — after identify_user should match normalized phone (all transports). */
-  const [sessionId, setSessionId] = useState("");
+  const { conversationId, sessionId, setSessionId, roomReady } = useConversationIds();
+  const { lkRoom, lkIdentity } = useLiveKitRoomIdentity(conversationId, sessionId);
 
-  useEffect(() => {
-    const id = newId();
-    setConversationId(id);
-    setSessionId(id);
-  }, []);
-
-  const roomReady = conversationId.length > 0;
   const livekitPublicUrl = useMemo(() => (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "").trim(), []);
 
   /** Advance MuseTalk seek vs room TTS (ms): RTC audio is often slightly ahead of ``<video>`` decode/play. */
@@ -85,19 +68,6 @@ export default function CallPage() {
       return t - liveKitLipsyncBiasMs;
     },
     [liveKitLipsyncBiasMs],
-  );
-
-  const lkRoom = useMemo(
-    () => sanitizeLiveKitRoomName(conversationId, DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME),
-    [conversationId],
-  );
-  const lkIdentity = useMemo(
-    () =>
-      sanitizeLiveKitIdentity(
-        sessionId.trim(),
-        `web-${(conversationId || "session").slice(0, 12)}`,
-      ),
-    [sessionId, conversationId],
   );
 
   /** Frozen once per LiveKit attempt so updating session_id (phone sync) does not reconnect RTC. */
@@ -173,7 +143,9 @@ export default function CallPage() {
   /** Per-segment audio offset (ms) from utterance start → maps ``rid`` from ``tts_begin``. */
   const liveKitTtsAudioOffsetMsByRidRef = useRef<Map<string, number>>(new Map());
   /** Segmented TTS: segment_index / segment_count for ``rid`` (suppress video `ended` between chunks). */
-  const liveKitTtsSegmentByRidRef = useRef<Map<string, { index: number; count: number }>>(new Map());
+  const liveKitTtsSegmentByRidRef = useRef<Map<string, { index: number; count: number }>>(
+    new Map(),
+  );
   const [recording, setRecording] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -415,7 +387,11 @@ export default function CallPage() {
           liveKitTtsSegmentByRidRef.current.delete(rid);
         }
         liveKitTtsAnchorByRidRef.current.set(rid, performance.now());
-        if (msg.worker_lipsync === true || msg.worker_lipsync === 1 || msg.worker_lipsync === "true") {
+        if (
+          msg.worker_lipsync === true ||
+          msg.worker_lipsync === 1 ||
+          msg.worker_lipsync === "true"
+        ) {
           liveKitWorkerLipsyncByRidRef.current.set(rid, true);
         }
         return;
@@ -566,14 +542,17 @@ export default function CallPage() {
   }, [result]);
 
   useEffect(() => {
-    if (!result || typeof result.tool_execution !== "object" || result.tool_execution === null) return;
+    if (!result || typeof result.tool_execution !== "object" || result.tool_execution === null)
+      return;
     const te = result.tool_execution as Record<string, unknown>;
     if (te.success !== true) return;
     const data = te.data as Record<string, unknown> | undefined;
     if (data) {
-      if (typeof data.phone === "string" && data.phone.trim()) lastPhoneRef.current = data.phone.trim();
+      if (typeof data.phone === "string" && data.phone.trim())
+        lastPhoneRef.current = data.phone.trim();
       const appt = data.appointment as { phone?: string } | undefined;
-      if (appt && typeof appt.phone === "string" && appt.phone.trim()) lastPhoneRef.current = appt.phone.trim();
+      if (appt && typeof appt.phone === "string" && appt.phone.trim())
+        lastPhoneRef.current = appt.phone.trim();
     }
     const tool = typeof te.tool === "string" ? te.tool : "";
     if (tool === "end_conversation") void fetchSummary();
@@ -584,7 +563,7 @@ export default function CallPage() {
     if (!syncSessionToPhone || !result) return;
     const next = suggestedSessionIdFromResult(result);
     if (next && next !== sessionId.trim()) setSessionId(next);
-  }, [result, syncSessionToPhone, sessionId]);
+  }, [result, syncSessionToPhone, sessionId, setSessionId]);
 
   const attachAudio = useCallback(
     async (data: AgentPayload) => {
@@ -687,7 +666,15 @@ export default function CallPage() {
     } finally {
       setBusy(false);
     }
-  }, [attachAudio, baseUrl, returnSpeech, sessionId, text, conversationId, mergeResultIntoTranscript]);
+  }, [
+    attachAudio,
+    baseUrl,
+    returnSpeech,
+    sessionId,
+    text,
+    conversationId,
+    mergeResultIntoTranscript,
+  ]);
 
   const sendText = sendTextRest;
 
@@ -771,7 +758,9 @@ export default function CallPage() {
             void blob.arrayBuffer().then(
               (ab) => {
                 if (ws.readyState !== WebSocket.OPEN) {
-                  setError("WebSocket closed before audio could be sent — check NEXT_PUBLIC_API_URL matches the running API.");
+                  setError(
+                    "WebSocket closed before audio could be sent — check NEXT_PUBLIC_API_URL matches the running API.",
+                  );
                   setBusy(false);
                   resolve();
                   return;
@@ -815,9 +804,7 @@ export default function CallPage() {
             if (t === "stt") {
               const tr = typeof payload.transcript === "string" ? payload.transcript : "";
               setLiveCaption(tr || "…");
-              transcriptPrefix = [
-                { id: "stt", label: tr || "(empty)", tone: "neutral" },
-              ];
+              transcriptPrefix = [{ id: "stt", label: tr || "(empty)", tone: "neutral" }];
               setStatusLine([...transcriptPrefix]);
               return;
             }
@@ -835,7 +822,9 @@ export default function CallPage() {
             }
             if (t === "tool" && typeof payload.tool_execution === "object") {
               feedAcc = [...feedAcc];
-              feedAcc.push(...buildActivityFeed({ plan: {}, tool_execution: payload.tool_execution }));
+              feedAcc.push(
+                ...buildActivityFeed({ plan: {}, tool_execution: payload.tool_execution }),
+              );
               setStatusLine(feedAcc.slice(-8));
               return;
             }
@@ -861,13 +850,18 @@ export default function CallPage() {
           ws.onclose = (ev) => {
             if (!finalized) {
               if (process.env.NODE_ENV === "development") {
-                console.warn("[call] /ws/conversation_audio closed before done", ev.code, ev.reason);
+                console.warn(
+                  "[call] /ws/conversation_audio closed before done",
+                  ev.code,
+                  ev.reason,
+                );
               }
-              setError((prev) =>
-                prev ??
-                (ev.code === 1000
-                  ? "Voice WebSocket closed before the assistant reply finished. Confirm NEXT_PUBLIC_API_URL matches your uvicorn host (e.g. http://127.0.0.1:8000)."
-                  : `Voice WebSocket closed (${ev.code}${ev.reason ? `: ${ev.reason}` : ""}). Confirm the API is running and browser can reach ${baseUrl}.`),
+              setError(
+                (prev) =>
+                  prev ??
+                  (ev.code === 1000
+                    ? "Voice WebSocket closed before the assistant reply finished. Confirm NEXT_PUBLIC_API_URL matches your uvicorn host (e.g. http://127.0.0.1:8000)."
+                    : `Voice WebSocket closed (${ev.code}${ev.reason ? `: ${ev.reason}` : ""}). Confirm the API is running and browser can reach ${baseUrl}.`),
               );
               setBusy(false);
               setLiveCaption(null);
@@ -881,7 +875,15 @@ export default function CallPage() {
         }
       });
     },
-    [attachAudio, returnSpeech, sessionId, wsBase, baseUrl, conversationId, mergeResultIntoTranscript],
+    [
+      attachAudio,
+      returnSpeech,
+      sessionId,
+      wsBase,
+      baseUrl,
+      conversationId,
+      mergeResultIntoTranscript,
+    ],
   );
 
   const startMic = useCallback(async () => {
@@ -976,8 +978,7 @@ export default function CallPage() {
 
     let cancelled = false;
     void (async () => {
-      const preferLiveKit =
-        (process.env.NEXT_PUBLIC_PREFER_LIVEKIT_VOICE ?? "").trim() === "1";
+      const preferLiveKit = (process.env.NEXT_PUBLIC_PREFER_LIVEKIT_VOICE ?? "").trim() === "1";
 
       if (!livekitPublicUrl) {
         if (!cancelled) {
@@ -1127,9 +1128,7 @@ export default function CallPage() {
           const chunks = [...segmentChunks];
           segmentChunks.length = 0;
           const blob =
-            chunks.length > 0
-              ? new Blob(chunks, { type: chunks[0]?.type || "audio/webm" })
-              : null;
+            chunks.length > 0 ? new Blob(chunks, { type: chunks[0]?.type || "audio/webm" }) : null;
           resolve(blob);
         };
         rec.stop();
@@ -1144,11 +1143,7 @@ export default function CallPage() {
       const bargeLoudEnough = rms > VAD_RMS_THRESHOLD * VAD_BARGE_RMS_MULT;
       const now = performance.now();
 
-      if (
-        speakingRef.current &&
-        bargeLoudEnough &&
-        now >= ttsBargeInGraceUntilRef.current
-      ) {
+      if (speakingRef.current && bargeLoudEnough && now >= ttsBargeInGraceUntilRef.current) {
         bargeLoud += 1;
         if (bargeLoud >= VAD_BARGE_IN_LOUD_TICKS) {
           ttsLifecycleRef.current?.stop();
@@ -1215,9 +1210,7 @@ export default function CallPage() {
 
   const listeningSurface =
     (wsVoicePath && voiceSessionOn) ||
-    (chatMode === "voice" &&
-      voiceBackend === "livekit" &&
-      (liveKitSurfaceOn || liveKitMicLive));
+    (chatMode === "voice" && voiceBackend === "livekit" && (liveKitSurfaceOn || liveKitMicLive));
 
   const transportLabel = useMemo(() => {
     if (chatMode === "text") return "Text";
@@ -1231,443 +1224,87 @@ export default function CallPage() {
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-[#121212] font-sans text-zinc-100">
-      {/* Top bar — Meet-like */}
-      <header className="flex shrink-0 items-center justify-between border-b border-zinc-800/80 px-4 py-3 md:px-6">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 shadow-lg shadow-emerald-900/30" />
-          <div>
-            <p className="text-sm font-semibold tracking-tight text-white">Healthcare visit</p>
-            <p className="text-[11px] text-zinc-500">Text chat or Voice · Live transcript</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span
-            className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-              busy ? "bg-amber-500/20 text-amber-200" : "bg-zinc-800 text-zinc-400"
-            }`}
-          >
-            {busy ? "Working" : !roomReady ? "Starting" : "Ready"}
-          </span>
-          <Link
-            href="/"
-            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800"
-          >
-            Exit
-          </Link>
-        </div>
-      </header>
+      <CallTopHeader busy={busy} roomReady={roomReady} />
 
       <ClientDemoShareBar />
 
-      <div
-        className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-zinc-800/60 bg-zinc-950/55 px-4 py-2 text-[11px] text-zinc-400 md:px-6"
-        role="status"
-        aria-live="polite"
-      >
-        <span className="rounded-md bg-zinc-800/90 px-2 py-0.5 font-medium text-zinc-200">{transportLabel}</span>
-        <span className="hidden text-zinc-600 sm:inline" aria-hidden>
-          ·
-        </span>
-        <span title={`Transcript + DB persistence key — unchanged when switching text / WebSocket / LiveKit: ${conversationId}`}>
-          Chat key:{" "}
-          <code className="rounded bg-zinc-900 px-1 font-mono text-zinc-200">
-            {roomReady ? `${conversationId.slice(0, 12)}…` : "…"}
-          </code>
-        </span>
-        <span className="hidden text-zinc-600 sm:inline" aria-hidden>
-          ·
-        </span>
-        <span title="Tool/booking session id for the API (normalized phone after a successful identify_user when sync is on)">
-          Session: <code className="rounded bg-zinc-900 px-1 font-mono text-zinc-200">{sessionId || "…"}</code>
-        </span>
-        {headerToolBanner ? (
-          <>
-            <span className="hidden text-zinc-600 sm:inline" aria-hidden>
-              ·
-            </span>
-            <span className="max-w-[min(100%,28rem)] truncate font-medium text-teal-300/95" title={headerToolBanner}>
-              Tool: {headerToolBanner}
-            </span>
-          </>
-        ) : null}
-      </div>
+      <CallSessionStatusBar
+        transportLabel={transportLabel}
+        conversationId={conversationId}
+        roomReady={roomReady}
+        sessionId={sessionId}
+        headerToolBanner={headerToolBanner}
+      />
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {/* Stage — lg:order-2 puts the avatar on the right on wide screens */}
-        <section className="flex min-h-[280px] flex-col items-center justify-center border-b border-zinc-800/80 px-4 py-8 lg:order-2 lg:w-[52%] lg:border-b-0 lg:border-l lg:border-zinc-800/80">
-          <div className="w-full max-w-md">
-            <AvatarVoice
-              speaking={speaking}
-              recording={recording || listeningSurface}
-              mediaStream={micVizStream}
-              playbackAnalyserRef={playbackAnalyserRef}
-              musetalkPortraitUrl={musetalkPortraitUrl}
-              lipsyncVideoUrl={lipsyncVideoUrl}
-              lipsyncSuppressVideoEnd={lipsyncSuppressVideoEnd}
-              lipsyncSyncStartPerfMs={lipsyncSyncStartPerfMs}
-              onLipsyncPlaybackEnd={onLipsyncPlaybackEnd}
-            />
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {listeningSurface ? (
-                <span className="rounded-full bg-teal-500/20 px-3 py-1 text-xs font-medium text-teal-200">
-                  {wsVoicePath && voiceSessionOn
-                    ? "Listening (WebSocket)"
-                    : liveKitSurfaceOn
-                      ? "Listening (LiveKit)"
-                      : "Listening (LiveKit mic)"}
-                </span>
-              ) : null}
-              {recording ? (
-                <span className="rounded-full bg-red-500/20 px-3 py-1 text-xs font-medium text-red-300">
-                  Recording
-                </span>
-              ) : null}
-              {speaking ? (
-                <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-medium text-emerald-300">
-                  Assistant speaking
-                </span>
-              ) : null}
-            </div>
-          </div>
+        <CallStageSection
+          speaking={speaking}
+          recording={recording}
+          listeningSurface={listeningSurface}
+          wsVoicePath={wsVoicePath}
+          voiceSessionOn={voiceSessionOn}
+          liveKitSurfaceOn={liveKitSurfaceOn}
+          liveKitMicLive={liveKitMicLive}
+          micVizStream={micVizStream}
+          playbackAnalyserRef={playbackAnalyserRef}
+          musetalkPortraitUrl={musetalkPortraitUrl}
+          lipsyncVideoUrl={lipsyncVideoUrl}
+          lipsyncSuppressVideoEnd={lipsyncSuppressVideoEnd}
+          lipsyncSyncStartPerfMs={lipsyncSyncStartPerfMs}
+          onLipsyncPlaybackEnd={onLipsyncPlaybackEnd}
+          statusLine={statusLine}
+          busy={busy}
+          roomReady={roomReady}
+          lkRoom={lkRoom}
+        />
 
-          <div className="mt-8 w-full max-w-lg space-y-2">
-            {(statusLine.length > 0 || busy) ? (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 py-2">
-                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                  Agent activity
-                </p>
-                <ul className="space-y-1 text-xs text-zinc-300">
-                  {statusLine.length === 0 && busy ? (
-                    <li className="text-zinc-500">Processing…</li>
-                  ) : null}
-                  {statusLine.map((f, idx) => (
-                    <li
-                      key={`${idx}-${f.id}`}
-                      className={
-                        f.tone === "ok"
-                          ? "text-emerald-400/90"
-                          : f.tone === "warn"
-                            ? "text-amber-300/90"
-                            : "text-zinc-400"
-                      }
-                    >
-                      {f.label}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            <details className="rounded-xl border border-zinc-800 bg-zinc-900/30 text-xs text-zinc-400">
-              <summary className="cursor-pointer px-3 py-2 font-medium text-zinc-300">
-                Voice troubleshooting
-              </summary>
-              <div className="space-y-2 border-t border-zinc-800 p-3 text-[11px] text-zinc-500">
-                <p>
-                  <strong className="text-zinc-400">LiveKit</strong>: run the LiveKit server and{" "}
-                  <code className="rounded bg-zinc-950 px-1 font-mono">run_voice_worker.py</code>; room{" "}
-                  <code className="font-mono">{roomReady ? lkRoom.slice(0, 24) : "…"}</code>.
-                </p>
-                <p>
-                  Live transcript lines are mirrored from{' '}
-                  <strong className="text-zinc-400">room transcription</strong> (user speech + assistant) when Voice
-                  uses LiveKit, and from REST/WebSocket when that path runs.
-                </p>
-                <p>
-                  If the status hint ends with{' '}
-                  <code className="rounded bg-zinc-950 px-1 font-mono">— switched to WebSocket</code>, something failed
-                  the LiveKit connect (timeouts, mic, token) and Voice fell back—the WebSocket path does not reuse the same
-                  LiveKit audio.
-                </p>
-                <p>
-                  If you see transcript but no spoken reply, the browser often blocks remote audio until microphone
-                  access and explicit playback start; tap the page if the hint mentions autoplay.
-                </p>
-              </div>
-            </details>
-          </div>
-        </section>
-
-        {/* Transcript + composer — lg:order-1 keeps conversation on the left */}
-        <section className="flex min-h-0 flex-1 flex-col bg-[#161616] lg:order-1">
-          <div className="flex shrink-0 items-center justify-between border-b border-zinc-800 px-4 py-2">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Live transcript</h2>
-            <button
-              type="button"
-              disabled={summaryBusy || busy || !roomReady}
-              onClick={fetchSummary}
-              className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-            >
-              {summaryBusy ? "…" : "Summary"}
-            </button>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-            {transcript.length === 0 && !liveCaption ? (
-              <p className="text-center text-sm text-zinc-500">
-                Your messages and the assistant will appear here with auto-scroll.
-              </p>
-            ) : null}
-            <div className="mx-auto max-w-xl space-y-3">
-              {transcript.map((line) => (
-                <div
-                  key={line.id}
-                  className={`flex ${line.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[92%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-                      line.role === "user"
-                        ? "rounded-br-md bg-emerald-600/25 text-emerald-50"
-                        : "rounded-bl-md border border-zinc-700/80 bg-zinc-800/80 text-zinc-100"
-                    }`}
-                  >
-                    <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-                      {line.role === "user" ? "You" : "Assistant"}
-                    </p>
-                    {line.text}
-                  </div>
-                </div>
-              ))}
-              {liveCaption ? (
-                <div className="flex justify-end opacity-80">
-                  <div className="max-w-[92%] rounded-2xl rounded-br-md border border-dashed border-zinc-600 bg-zinc-900/60 px-4 py-2 text-sm italic text-zinc-400">
-                    {liveCaption}
-                  </div>
-                </div>
-              ) : null}
-              <div ref={transcriptEndRef} aria-hidden="true" className="h-1" />
-            </div>
-          </div>
-
-          {/* Composer */}
-          <div className="shrink-0 border-t border-zinc-800 bg-[#121212] p-3 md:p-4">
-            {callSummary ? (
-              <div className="mx-auto mb-3 max-w-2xl rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 text-xs text-zinc-300">
-                <p className="font-semibold text-zinc-200">Visit summary</p>
-                <p className="mt-1 whitespace-pre-wrap text-zinc-400">{callSummary.summary}</p>
-              </div>
-            ) : null}
-
-            {error ? (
-              <p className="mx-auto mb-2 max-w-2xl rounded-lg border border-amber-900/50 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
-                {error}
-              </p>
-            ) : null}
-
-            <div className="mx-auto mb-4 flex max-w-2xl">
-              <div className="inline-flex w-full rounded-xl border border-zinc-700 p-0.5 sm:w-auto">
-                <button
-                  type="button"
-                  aria-pressed={chatMode === "text"}
-                  onClick={() => setChatMode("text")}
-                  disabled={busy}
-                  className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors sm:flex-none sm:min-w-[7rem] ${
-                    chatMode === "text"
-                      ? "bg-zinc-100 text-zinc-900"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  } disabled:opacity-40`}
-                >
-                  Text chat
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={chatMode === "voice"}
-                  onClick={() => setChatMode("voice")}
-                  disabled={busy}
-                  className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors sm:flex-none sm:min-w-[7rem] ${
-                    chatMode === "voice"
-                      ? "bg-teal-600 text-white"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  } disabled:opacity-40`}
-                >
-                  Voice chat
-                </button>
-              </div>
-            </div>
-
-            {chatMode === "text" ? (
-              <div className="mx-auto flex max-w-2xl flex-col gap-2 sm:flex-row sm:items-end">
-                <textarea
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  disabled={busy || !roomReady}
-                  rows={2}
-                  placeholder="Type a message…"
-                  className="min-h-[44px] flex-1 resize-none rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600 disabled:opacity-50"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void sendText();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  disabled={busy || !roomReady}
-                  onClick={sendText}
-                  className="shrink-0 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
-                >
-                  Send
-                </button>
-              </div>
-            ) : (
-              <div className="mx-auto max-w-2xl space-y-3">
-                <div>
-                  <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                    Voice transport
-                  </p>
-                  <div className="inline-flex w-full rounded-xl border border-zinc-700 p-0.5 sm:w-auto">
-                    <button
-                      type="button"
-                      aria-pressed={voiceBackend === "websocket"}
-                      onClick={() => {
-                        userVoiceBackendPinnedRef.current = true;
-                        setVoiceBackend("websocket");
-                        setVoiceSurfaceHint("WebSocket voice — pause ~1s after speaking to send.");
-                      }}
-                      disabled={busy || !roomReady}
-                      className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-none sm:min-w-[8rem] ${
-                        voiceBackend === "websocket"
-                          ? "bg-teal-600 text-white"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      } disabled:opacity-40`}
-                    >
-                      WebSocket
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={voiceBackend === "livekit"}
-                      onClick={() => {
-                        userVoiceBackendPinnedRef.current = true;
-                        setVoiceBackend("livekit");
-                        setVoiceSurfaceHint("LiveKit selected — connecting…");
-                      }}
-                      disabled={
-                        busy ||
-                        !roomReady ||
-                        !livekitPublicUrl ||
-                        liveKitStatusOk !== true
-                      }
-                      title={
-                        !livekitPublicUrl
-                          ? "Set NEXT_PUBLIC_LIVEKIT_URL"
-                          : liveKitStatusOk === null
-                            ? "Checking LiveKit…"
-                            : liveKitStatusOk === false
-                              ? "LiveKit token service not available"
-                              : "Room worker + RTC"
-                      }
-                      className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-none sm:min-w-[8rem] ${
-                        voiceBackend === "livekit"
-                          ? "bg-teal-600 text-white"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      } disabled:opacity-40`}
-                    >
-                      LiveKit
-                    </button>
-                  </div>
-                  {livekitPublicUrl && liveKitStatusOk === null ? (
-                    <p className="mt-1 text-[11px] text-zinc-500">Checking LiveKit token service…</p>
-                  ) : null}
-                </div>
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/35 px-4 py-4 text-sm text-zinc-300">
-                  <p className="leading-relaxed">
-                    {voiceSurfaceHint ??
-                      (!roomReady ? "Starting session…" : "Voice session starting…")}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <details className="mx-auto mt-3 max-w-2xl text-[11px] text-zinc-500">
-              <summary className="cursor-pointer text-zinc-400">Advanced</summary>
-              <div className="mt-2 space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
-                {chatMode === "text" ? (
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={busy || recording || voiceSessionOn || !roomReady}
-                      onClick={startMic}
-                      className="rounded-lg border border-zinc-600 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
-                      title="Push-to-talk — Text mode Advanced"
-                    >
-                      Mic (push-to-talk)
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy || !recording}
-                      onClick={() => void stopMicAndSend()}
-                      className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-900 hover:bg-white disabled:opacity-40"
-                    >
-                      Stop &amp; send
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-1 text-zinc-500">
-                    <p>
-                      Use <strong className="text-zinc-400">Text chat</strong> to type messages. WebSocket voice auto-sends turns after a pause; you can talk over assistant TTS to interrupt.
-                    </p>
-                    <p>LiveKit path needs <code className="font-mono text-zinc-400">run_voice_worker.py</code> and matching env on API + worker.</p>
-                  </div>
-                )}
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={syncSessionToPhone}
-                    onChange={(e) => setSyncSessionToPhone(e.target.checked)}
-                  />
-                  After identify, use phone as session ID (booking)
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={returnSpeech} onChange={(e) => setReturnSpeech(e.target.checked)} />
-                  Spoken replies (TTS)
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={useChunkedWsMic}
-                    onChange={(e) => setUseChunkedWsMic(e.target.checked)}
-                  />
-                  Text mode: send mic capture via WebSocket audio (recommended; avoid multi-part upload)
-                </label>
-                <p className="font-mono text-[10px] text-zinc-600">
-                  Room: {roomReady ? `${conversationId.slice(0, 8)}…` : "…"} · LiveKit room:{" "}
-                  <span className="break-all">{roomReady ? lkRoom : "…"}</span> · Identity:{" "}
-                  <span className="break-all">{lkIdentity}</span>
-                </p>
-                <label className="block">
-                  Session override
-                  <input
-                    value={sessionId}
-                    onChange={(e) => setSessionId(e.target.value)}
-                    className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-zinc-200"
-                  />
-                </label>
-                <label className="block">
-                  Upload audio
-                  <input
-                    type="file"
-                    accept="audio/*,.wav,.webm,.mp3,.ogg"
-                    disabled={busy || !roomReady}
-                    className="mt-1 block w-full text-zinc-400 file:mr-2 file:rounded file:border-0 file:bg-zinc-800 file:px-2 file:py-1"
-                    onChange={(e) => onAudioPick(e.target.files?.[0] ?? null)}
-                  />
-                </label>
-                {result ? (
-                  <details>
-                    <summary className="cursor-pointer text-zinc-400">Raw JSON</summary>
-                    <pre className="mt-2 max-h-40 overflow-auto rounded bg-black/40 p-2 text-[10px]">
-                      {JSON.stringify(result, null, 2)}
-                    </pre>
-                  </details>
-                ) : null}
-              </div>
-            </details>
-          </div>
-        </section>
+        <CallTranscriptColumn
+          transcript={transcript}
+          liveCaption={liveCaption}
+          transcriptEndRef={transcriptEndRef}
+          callSummary={callSummary}
+          summaryBusy={summaryBusy}
+          busy={busy}
+          roomReady={roomReady}
+          error={error}
+          chatMode={chatMode}
+          setChatMode={setChatMode}
+          text={text}
+          setText={setText}
+          sendText={sendText}
+          voiceBackend={voiceBackend}
+          setVoiceBackend={setVoiceBackend}
+          livekitPublicUrl={livekitPublicUrl}
+          liveKitStatusOk={liveKitStatusOk}
+          voiceSurfaceHint={voiceSurfaceHint}
+          setVoiceSurfaceHint={setVoiceSurfaceHint}
+          userVoiceBackendPinnedRef={userVoiceBackendPinnedRef}
+          syncSessionToPhone={syncSessionToPhone}
+          setSyncSessionToPhone={setSyncSessionToPhone}
+          returnSpeech={returnSpeech}
+          setReturnSpeech={setReturnSpeech}
+          useChunkedWsMic={useChunkedWsMic}
+          setUseChunkedWsMic={setUseChunkedWsMic}
+          conversationId={conversationId}
+          lkRoom={lkRoom}
+          lkIdentity={lkIdentity}
+          sessionId={sessionId}
+          setSessionId={setSessionId}
+          onAudioPick={onAudioPick}
+          result={result}
+          onFetchSummary={fetchSummary}
+          startMic={startMic}
+          stopMicAndSend={stopMicAndSend}
+          recording={recording}
+          voiceSessionOn={voiceSessionOn}
+        />
       </div>
 
-      {livekitPublicUrl && chatMode === "voice" && voiceBackend === "livekit" && roomReady && liveKitBindings ? (
+      {livekitPublicUrl &&
+      chatMode === "voice" &&
+      voiceBackend === "livekit" &&
+      roomReady &&
+      liveKitBindings ? (
         <LiveKitPanel
           apiBase={baseUrl}
           active

@@ -10,7 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.hardware.cuda_ld_path import prepend_cuda_ld_library_path
 from app.log_setup import setup_repo_file_logging
-from app.routers import agent_routes, audio_routes, avatar, conversation_routes, health, internal, livekit, websockets
+from app.routers import (
+    agent_routes,
+    audio_routes,
+    avatar,
+    conversation_routes,
+    health,
+    internal,
+    livekit,
+    websockets,
+)
 from app.version import APP_VERSION
 
 _backend_dir = Path(__file__).resolve().parent.parent

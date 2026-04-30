@@ -12,16 +12,16 @@ from typing import Any
 
 import httpx
 
-from app.agent.memory import get_session_memory
 from app.agent.finalize_guard import apply_tool_truth_guard
+from app.agent.memory import get_session_memory
 from app.agent.plan_coerce import coerce_agent_plan
 from app.agent.plan_precheck import apply_plan_precheck
-from app.session_booking_gate import register_offered_slots, register_verified_phone
 from app.db.conversation_messages import hydrate_session_memory, persist_exchange
 from app.llm import ollama as ollama_client
 from app.llm.parser import parse_plan_with_retry
 from app.llm.prompts import FINALIZE_SYSTEM, build_plan_system
 from app.llm.schema import AgentPlan
+from app.session_booking_gate import register_offered_slots, register_verified_phone
 from app.tools.executor import TOOL_FETCH_SLOTS, TOOL_IDENTIFY_USER, execute_tool
 
 logger = logging.getLogger(__name__)

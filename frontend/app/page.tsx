@@ -28,7 +28,8 @@ async function fetchHealth(baseUrl: string): Promise<{
 export default async function Home() {
   /** Direct to uvicorn from the Next server (not proxied through :3000). */
   const internalApi =
-    (process.env.INTERNAL_API_URL ?? defaultInternalApiUrl).trim().replace(/\/$/, "") || defaultInternalApiUrl;
+    (process.env.INTERNAL_API_URL ?? defaultInternalApiUrl).trim().replace(/\/$/, "") ||
+    defaultInternalApiUrl;
   const health = await fetchHealth(internalApi);
 
   return (
@@ -42,7 +43,9 @@ export default async function Home() {
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
           Probing{" "}
-          <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs dark:bg-zinc-800">{internalApi}/health</code>{" "}
+          <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs dark:bg-zinc-800">
+            {internalApi}/health
+          </code>{" "}
           from the Next server.
         </p>
 
@@ -91,9 +94,12 @@ export default async function Home() {
           </li>
           <li>
             <span>
-              Unset or leave <code className="rounded bg-zinc-100 px-1 py-0.5 text-xs dark:bg-zinc-800">NEXT_PUBLIC_API_URL</code>{" "}
-              empty to use the page origin (works with a tunnel to :3000 and Next rewrites). Otherwise set it to your API
-              origin (default dev: {defaultInternalApiUrl}).
+              Unset or leave{" "}
+              <code className="rounded bg-zinc-100 px-1 py-0.5 text-xs dark:bg-zinc-800">
+                NEXT_PUBLIC_API_URL
+              </code>{" "}
+              empty to use the page origin (works with a tunnel to :3000 and Next rewrites).
+              Otherwise set it to your API origin (default dev: {defaultInternalApiUrl}).
             </span>
           </li>
         </ul>
