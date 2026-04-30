@@ -8,6 +8,7 @@
   "scripts": {
     "clean": "rm -rf .next",
     "dev": "next dev",
+    "dev:demo": "next dev -H 0.0.0.0 -p 3000",
     "dev:fresh": "npm run clean && next dev",
     "build": "next build",
     "start": "next start",

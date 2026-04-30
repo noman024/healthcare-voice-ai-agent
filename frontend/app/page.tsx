@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-const defaultApiUrl = "http://localhost:8000";
+const defaultInternalApiUrl = "http://127.0.0.1:8000";
 
 type HealthPayload = { status: string };
 
@@ -26,8 +26,10 @@ async function fetchHealth(baseUrl: string): Promise<{
 }
 
 export default async function Home() {
-  const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? defaultApiUrl;
-  const health = await fetchHealth(baseUrl);
+  /** Direct to uvicorn from the Next server (not proxied through :3000). */
+  const internalApi =
+    (process.env.INTERNAL_API_URL ?? defaultInternalApiUrl).trim().replace(/\/$/, "") || defaultInternalApiUrl;
+  const health = await fetchHealth(internalApi);
 
   return (
     <div className="flex min-h-full flex-1 flex-col items-center justify-center bg-zinc-50 px-6 py-16 font-sans dark:bg-zinc-950">
@@ -39,7 +41,9 @@ export default async function Home() {
           Backend connectivity
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-          Verifying <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs dark:bg-zinc-800">{baseUrl}/health</code>.
+          Probing{" "}
+          <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs dark:bg-zinc-800">{internalApi}/health</code>{" "}
+          from the Next server.
         </p>
 
         <div
@@ -78,7 +82,7 @@ export default async function Home() {
           </li>
           <li>
             <Link
-              href={`${baseUrl.replace(/\/$/, "")}/docs`}
+              href="/docs"
               className="font-medium text-zinc-900 underline decoration-zinc-300 underline-offset-2 hover:decoration-zinc-600 dark:text-zinc-100 dark:decoration-zinc-600 dark:hover:decoration-zinc-400"
             >
               OpenAPI docs
@@ -87,9 +91,9 @@ export default async function Home() {
           </li>
           <li>
             <span>
-              Set <code className="rounded bg-zinc-100 px-1 py-0.5 text-xs dark:bg-zinc-800">NEXT_PUBLIC_API_URL</code> in{" "}
-              <code className="rounded bg-zinc-100 px-1 py-0.5 text-xs dark:bg-zinc-800">.env.local</code> if the API
-              is not on {defaultApiUrl}.
+              Unset or leave <code className="rounded bg-zinc-100 px-1 py-0.5 text-xs dark:bg-zinc-800">NEXT_PUBLIC_API_URL</code>{" "}
+              empty to use the page origin (works with a tunnel to :3000 and Next rewrites). Otherwise set it to your API
+              origin (default dev: {defaultInternalApiUrl}).
             </span>
           </li>
         </ul>

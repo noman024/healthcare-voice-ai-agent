@@ -21,7 +21,6 @@ import type {
   FeedItem,
   TranscriptEntry,
 } from "./callTypes";
-import { DEFAULT_API_URL } from "./callTypes";
 import {
   buildActivityFeed,
   coerceNonNegInt,
@@ -29,6 +28,7 @@ import {
   coerceVaLast,
   coerceVaSeq,
   httpToWsBase,
+  resolveClientApiBase,
   mergeTtsWavChunks,
   newId,
   suggestedSessionIdFromResult,
@@ -39,9 +39,10 @@ import LiveKitPanel, {
   sanitizeLiveKitIdentity,
   sanitizeLiveKitRoomName,
 } from "./LiveKitPanel";
+import { ClientDemoShareBar } from "./ClientDemoShareBar";
 
 export default function CallPage() {
-  const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).replace(/\/$/, "");
+  const baseUrl = resolveClientApiBase();
   /** When set, browser POSTs lipsync here (e.g. dedicated :8001 service). Defaults to main API (proxy path). */
   const musetalkApiBase = useMemo(
     () => (process.env.NEXT_PUBLIC_MUSETALK_API_URL ?? "").trim().replace(/\/$/, "") || baseUrl,
@@ -1255,6 +1256,8 @@ export default function CallPage() {
           </Link>
         </div>
       </header>
+
+      <ClientDemoShareBar />
 
       <div
         className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-zinc-800/60 bg-zinc-950/55 px-4 py-2 text-[11px] text-zinc-400 md:px-6"

@@ -1,7 +1,22 @@
 import type { AgentPayload, FeedItem } from "./callTypes";
 
+/** When `NEXT_PUBLIC_API_URL` is unset, `/call` uses the page origin and Next rewrites to FastAPI (:8000). */
+export function resolveClientApiBase(): string {
+  const fromEnv = (process.env.NEXT_PUBLIC_API_URL ?? "").trim().replace(/\/$/, "");
+  if (fromEnv) return fromEnv;
+  if (typeof window !== "undefined") return window.location.origin;
+  return "";
+}
+
 export function httpToWsBase(httpUrl: string): string {
-  return httpUrl.trim().replace(/\/$/, "").replace(/^http/, "ws");
+  const t = httpUrl.trim().replace(/\/$/, "");
+  if (!t) {
+    if (typeof window !== "undefined") {
+      return window.location.origin.replace(/^http/, "ws");
+    }
+    return "ws://127.0.0.1:3000";
+  }
+  return t.replace(/^http/, "ws");
 }
 
 /** Reassemble base64-encoded byte chunks from the LiveKit worker into a WAV ``Uint8Array``. */
