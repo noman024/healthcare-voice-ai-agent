@@ -307,6 +307,22 @@ export default function CallPage() {
   const roomReady = conversationId.length > 0;
   const livekitPublicUrl = useMemo(() => (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "").trim(), []);
 
+  /** Advance MuseTalk seek vs room TTS (ms): RTC audio is often slightly ahead of ``<video>`` decode/play. */
+  const liveKitLipsyncBiasMs = useMemo(() => {
+    const raw = (process.env.NEXT_PUBLIC_LIVEKIT_LIPSYNC_BIAS_MS ?? "90").trim();
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 90;
+    return Math.max(0, Math.min(400, n));
+  }, []);
+
+  const liveKitSyncPerfMs = useCallback(
+    (basePerf: number | null, offsetMs: number): number => {
+      const t = basePerf != null ? basePerf + offsetMs : performance.now();
+      return t - liveKitLipsyncBiasMs;
+    },
+    [liveKitLipsyncBiasMs],
+  );
+
   const lkRoom = useMemo(
     () => sanitizeLiveKitRoomName(conversationId, DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME),
     [conversationId],
@@ -527,17 +543,12 @@ export default function CallPage() {
       setLipsyncSuppressVideoEnd(suppressEnded);
       const offMs = liveKitTtsAudioOffsetMsByRidRef.current.get(utteranceRid) ?? 0;
       const base = liveKitUtteranceAnchorPerfRef.current;
-      const useUtteranceTimeline =
-        liveKitCurrentUtteranceIdRef.current != null &&
-        liveKitTtsAudioOffsetMsByRidRef.current.has(utteranceRid) &&
-        base != null;
-      const syncAt = useUtteranceTimeline ? base + offMs : performance.now();
-      setLipsyncSyncStartPerfMs(syncAt);
+      setLipsyncSyncStartPerfMs(liveKitSyncPerfMs(base, offMs));
       setLipsyncVideoUrl(url);
       setSpeaking(true);
       speakingRef.current = true;
     },
-    [revokeLipsyncUrl],
+    [revokeLipsyncUrl, liveKitSyncPerfMs],
   );
 
   const onLiveKitAssistantSpeakingStarted = useCallback(() => {
@@ -551,14 +562,12 @@ export default function CallPage() {
     if (!rid) return;
     const ord = liveKitRidToOrdinalRef.current.get(rid) ?? -1;
     if (ord < 0 || ord !== liveKitUtteranceHeadOrdinalRef.current) return;
+    if (!anchorWasNull) return;
     const off = liveKitTtsAudioOffsetMsByRidRef.current.get(rid) ?? 0;
     const base = liveKitUtteranceAnchorPerfRef.current;
-    if (liveKitCurrentUtteranceIdRef.current != null) {
-      if (base != null && anchorWasNull) setLipsyncSyncStartPerfMs(base + off);
-    } else if (anchorWasNull) {
-      setLipsyncSyncStartPerfMs(ts);
-    }
-  }, [chatMode, voiceBackend]);
+    if (base == null) return;
+    setLipsyncSyncStartPerfMs(liveKitSyncPerfMs(base, off));
+  }, [chatMode, voiceBackend, liveKitSyncPerfMs]);
 
   const runLiveKitMusetalkFromWavBytes = useCallback(
     async (
