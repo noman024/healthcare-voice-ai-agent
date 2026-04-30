@@ -120,10 +120,17 @@ export function buildActivityFeed(result: AgentPayload): FeedItem[] {
         : "";
   if (intent) out.push({ id: "intent", label: intent, tone: "neutral" });
   const tool = typeof plan?.tool === "string" ? plan.tool : "";
-  if (tool && tool !== "none") {
+  const teRaw = result.tool_execution;
+  /** When tool_execution names the same tool as plan, show only execution lines (running / done) — matches LiveKit worker payloads and avoids duplicate labels. */
+  let skipPlanToolLine = false;
+  if (teRaw && typeof teRaw === "object" && tool && tool !== "none") {
+    const te0 = teRaw as Record<string, unknown>;
+    const teT = typeof te0.tool === "string" ? te0.tool : "";
+    if (teT === tool) skipPlanToolLine = true;
+  }
+  if (tool && tool !== "none" && !skipPlanToolLine) {
     out.push({ id: "tool-plan", label: toolIntentLabel(tool), tone: "neutral" });
   }
-  const teRaw = result.tool_execution;
   if (teRaw && typeof teRaw === "object") {
     const te = teRaw as Record<string, unknown>;
     const phase = typeof te.phase === "string" ? te.phase : "";

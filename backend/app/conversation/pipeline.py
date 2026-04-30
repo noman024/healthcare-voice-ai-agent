@@ -138,7 +138,7 @@ def iter_chunked_audio_turn_events(
 ) -> Iterator[dict[str, Any]]:
     """
     WebSocket-friendly: emit ``stt_started`` (before Whisper runs), then ``stt`` with the transcript, then the
-    same ``plan`` / ``tool`` / ``done`` stream as ``iter_turn_events``, with ``done`` augmented by
+    same ``plan`` / ``tool`` (first ``phase: running`` when applicable, then result) / ``done``, with ``done`` augmented by
     ``transcript``, ``detected_language``, optional ``audio_wav_base64``, and ``mode``.
     """
     suf = normalize_suffix(file_suffix)

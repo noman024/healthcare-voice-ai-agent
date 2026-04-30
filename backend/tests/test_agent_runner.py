@@ -4,7 +4,7 @@ import httpx
 
 from app.session_booking_gate import register_offered_slots, register_verified_phone
 from app.agent.memory import clear_session_memory_for_tests, get_session_memory
-from app.agent.runner import run_turn
+from app.agent.runner import iter_turn_events, run_turn
 from app.tools import slots
 
 
@@ -17,6 +17,49 @@ def test_memory_keeps_last_twenty_chat_messages():
     assert len(msgs) == 20
     assert msgs[0]["role"] == "user"
     assert msgs[0]["content"] == "u5"
+
+
+def test_iter_turn_events_running_phase_before_tool_result(db_conn):
+    """REST/WebSocket path matches LiveKit: in-flight ``tool_execution`` before execute_tool."""
+    clear_session_memory_for_tests()
+    n = {"c": 0}
+
+    plan_json = json.dumps(
+        {
+            "intent": "id",
+            "tool": "identify_user",
+            "arguments": {"phone": "+15551234567", "name": "Pat"},
+            "response": "Thanks.",
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        n["c"] += 1
+        if n["c"] == 1:
+            return httpx.Response(200, json={"message": {"content": plan_json}})
+        return httpx.Response(200, json={"message": {"content": "Welcome, Pat."}})
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        evs = list(
+            iter_turn_events(
+                db_conn,
+                user_message="Pat here, +1 555 123 4567",
+                session_id="anon-run",
+                client=client,
+            ),
+        )
+
+    kinds = [(e.get("type"), e.get("tool_execution")) for e in evs[:-1]]
+    assert ("plan", None) == kinds[0]
+    running = kinds[1]
+    assert running[0] == "tool"
+    te0 = running[1]
+    assert isinstance(te0, dict) and te0.get("phase") == "running" and te0.get("tool") == "identify_user"
+    assert kinds[2][0] == "tool" and isinstance(kinds[2][1], dict)
+    assert kinds[2][1].get("success") is True
+    assert kinds[2][1].get("tool") == "identify_user"
+    assert evs[-1]["type"] == "done"
 
 
 def test_run_turn_planner_finalize_mock(db_conn):

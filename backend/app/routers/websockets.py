@@ -19,7 +19,7 @@ async def ws_agent(websocket: WebSocket) -> None:
     JSON-over-WebSocket agent turns (REST remains the default transport).
 
     Client → server (text): ``{\"action\":\"turn\",\"message\":\"...\",\"session_id\":\"...\"}`` or ``{\"action\":\"ping\"}``.
-    Server → client: ``plan`` / ``tool`` / ``done`` events (same shapes as ``iter_turn_events``), or ``error``.
+    Server → client: ``plan``, ``tool`` (may arrive twice when ``phase: running`` precedes execution), ``done`` — same shapes as ``iter_turn_events`` — or ``error``.
     """
     await websocket.accept()
     conn = websocket.app.state.db_conn

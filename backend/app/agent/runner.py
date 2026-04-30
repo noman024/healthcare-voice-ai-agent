@@ -38,7 +38,9 @@ def iter_turn_events(
     """
     Same pipeline as run_turn, yielding structured events for WebSocket / activity feeds.
 
-    Order: plan → optional tool → done (includes final_response and full plan payload).
+    Order: plan → optional ``tool`` (``phase: running``) → optional ``tool`` (final
+    execution) → done (includes final_response and full plan payload). Matches LiveKit
+    worker UX for activity feeds.
 
     ``persistence_session_id`` (if set) keys in-memory + SQLite transcript storage while
     ``session_id`` still drives tools (e.g. UI handoff to normalized phone for booking gate).
@@ -90,6 +92,11 @@ def iter_turn_events(
     tool_execution: dict[str, Any] | None = None
     session_identity: dict[str, str] | None = None
     if plan.tool != "none":
+        yield {
+            "type": "tool",
+            "session_id": session_id,
+            "tool_execution": {"phase": "running", "tool": plan.tool},
+        }
         tool_execution = execute_tool(conn, plan.tool, plan.arguments, session_id=session_id)
         logger.info(
             "agent_tool_ran session=%s tool=%s success=%s",

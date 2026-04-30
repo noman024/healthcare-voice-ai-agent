@@ -534,13 +534,23 @@ export default function CallPage() {
       }
       if (kind === "tool" && msg.tool_execution && typeof msg.tool_execution === "object") {
         const te = msg.tool_execution as Record<string, unknown>;
+        const tName = typeof te.tool === "string" ? te.tool.trim() : "";
+        const phase = typeof te.phase === "string" ? te.phase : "";
         setResult((prev) => {
           const base = typeof prev === "object" && prev !== null ? prev : {};
-          const next = { ...base, tool_execution: te } as AgentPayload;
-          queueMicrotask(() => {
-            setStatusLine(buildActivityFeed(next).slice(-8));
-          });
-          return next;
+          const plan =
+            tName && tName !== "none"
+              ? {
+                  intent: phase === "running" ? "Voice assistant" : "Voice visit",
+                  tool: tName,
+                  arguments: {} as Record<string, unknown>,
+                }
+              : undefined;
+          return {
+            ...base,
+            tool_execution: te,
+            ...(plan ? { plan } : {}),
+          } as AgentPayload;
         });
         return;
       }
