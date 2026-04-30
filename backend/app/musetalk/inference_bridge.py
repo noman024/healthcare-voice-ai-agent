@@ -66,6 +66,11 @@ def run_lipsync_to_mp4(
     Run MuseTalk ``scripts/inference.py`` for one reference image + WAV; return muxed MP4 bytes.
 
     Uses a stable coord cache under ``MUSETALK_CACHE_DIR`` (see MuseTalk ``crop_coord_save_path`` layout).
+
+    **Performance note:** each call spawns a subprocess that **reloads** Whisper/UNet/VAE onto the GPU.
+    Env knobs (``MUSETALK_BATCH_SIZE``, ``MUSETALK_FLOAT16``, ``MUSETALK_X264_*``, coord reuse via
+    ``--use_saved_coord``) help, but a long-lived inference worker with resident weights (upstream
+    ``realtime_inference.py`` pattern) is the next step for minimum per-request latency at high QPS.
     """
     s = settings or load_musetalk_settings()
     if not s.enabled:
@@ -139,6 +144,17 @@ def run_lipsync_to_mp4(
                 "--unet_model_path",
                 str(s.root / "models" / "musetalk" / "pytorch_model.bin"),
             ]
+        x264_preset = (os.getenv("MUSETALK_X264_PRESET") or "").strip()
+        if x264_preset:
+            cmd += ["--x264_preset", x264_preset]
+        x264_crf = (os.getenv("MUSETALK_X264_CRF") or "").strip()
+        if x264_crf:
+            try:
+                int(x264_crf)
+            except ValueError:
+                logger.warning("musetalk_invalid_x264_crf ignored %s", x264_crf)
+            else:
+                cmd += ["--x264_crf", x264_crf]
         if s.ffmpeg_path:
             cmd += ["--ffmpeg_path", s.ffmpeg_path]
         if s.use_float16:
