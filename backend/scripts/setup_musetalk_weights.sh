@@ -16,7 +16,7 @@ unset HF_ENDPOINT || true
 
 hf download TMElyralab/MuseTalk musetalk/musetalk.json musetalk/pytorch_model.bin --local-dir models
 hf download TMElyralab/MuseTalk musetalkV15/musetalk.json musetalkV15/unet.pth --local-dir models
-hf download stabilityai/sd-vae-ft-mse config.json diffusion_pytorch_model.bin --local-dir models/sd-vae
+hf download stabilityai/sd-vae-ft-mse config.json diffusion_pytorch_model.bin diffusion_pytorch_model.safetensors --local-dir models/sd-vae
 hf download openai/whisper-tiny config.json pytorch_model.bin preprocessor_config.json --local-dir models/whisper
 hf download yzd-v/DWPose dw-ll_ucoco_384.pth --local-dir models/dwpose
 hf download ByteDance/LatentSync latentsync_syncnet.pt --local-dir models/syncnet
