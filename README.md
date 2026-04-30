@@ -27,7 +27,12 @@ LiveKit does **not** replace FastAPI: the worker calls the API for TTS and share
 | Hosted LLM                | **Ollama** (`OLLAMA_`*)                                                                           |
 | Database                  | **SQLite** (`DATABASE_PATH`)                                                                      |
 | Real-time room (optional) | **LiveKit** server + `[backend/scripts/run_voice_worker.py](backend/scripts/run_voice_worker.py)` |
-| Avatar                    | In-browser level/mouth from audio (no third-party avatar SDK)                                     |
+| Avatar                    | Optional **MuseTalk** (`/avatar/lipsync`) + in-browser level/mouth from audio                      |
+
+
+### Enterprise / managed providers (not wired here)
+
+Some specs reference **Deepgram** (STT), **Cartesia** (TTS), and **Tavus / Beyond Presence** (avatar). This repo uses **faster-whisper**, **Piper**, **Ollama**, and optional **MuseTalk** instead. Replacing providers means changing STT/TTS wiring in [`backend/app/lk_agents/voice_agent.py`](backend/app/lk_agents/voice_agent.py) and related FastAPI routes—not a single env toggle today.
 
 
 ## Prerequisites
@@ -132,7 +137,7 @@ Use this when you want **browser WebRTC** + **livekit-agents** instead of (or al
 
 ## MuseTalk lip-sync (optional, GPU)
 
-End-to-end / production path for **video** lipsync after Piper TTS on routes that return `audio_wav_base64` (text chat, push-to-talk upload, WebSocket voice with `return_speech`). **LiveKit** assistant audio stays **canvas**-only unless you add a worker-side video track later.
+End-to-end / production path for **video** lipsync after Piper TTS on routes that return `audio_wav_base64` (text chat, push-to-talk upload, WebSocket voice with `return_speech`). **LiveKit** can stream assistant audio only, or—with `VOICE_WORKER_LIPSYNC=1` (default) and `NEXT_PUBLIC_MUSETALK_ENABLED=1`—the worker POSTs WAV to `/avatar/lipsync` and pushes MP4 chunks to the browser over LiveKit data (see `voice_agent.py` and `LiveKitPanel.tsx`).
 
 1. **Clone** into `third_party/MuseTalk` (folder is gitignored — create it beside `backend/`):
 

@@ -3,7 +3,8 @@
 HTTP regression: mixes POST /process (Ollama) with POST /tools/invoke (deterministic SQLite).
 
 Invoke covers booking/slots/retrieve/cancel so results do not depend on planner luck;
-/process covers greeting, identify, conversational double-book trap, goodbye.
+Invoke covers booking/slots/retrieve/cancel so results do not depend on planner luck;
+/process covers greeting, identify, conversational blocked re-book after a slot is taken, goodbye.
 
 Each run uses a rotating calendar date (shared DB may already fill 09:00 on popular test dates).
 
@@ -128,19 +129,52 @@ def main() -> int:
         expect("6_invoke_book", False, str(e))
 
     try:
+        # Direct invoke bypasses the per-session booking gate → second insert hits SQLite DoubleBookingError.
+        inv7a = post_invoke(
+            "book_appointment",
+            {"name": "Dup Test One", "phone": phone, "date": date_a, "time": "09:00"},
+        )
+        ok7a = (
+            isinstance(inv7a, dict)
+            and inv7a.get("success") is False
+            and inv7a.get("error", {}).get("code") == "double_booking"
+        )
+        expect("7_invoke_double_book_blocked", ok7a, str((inv7a or {}).get("error", {}).get("code", "")))
+    except Exception as e:
+        expect("7_invoke_double", False, str(e))
+
+    try:
+        # Agent path: prime session gate (identify + fetch_slots) then ask for a slot that is no longer offered
+        # after step 6 — expect failure (validation_error), not a duplicate DB row.
+        sid_db = f"{session}-db"
+        post_process(f"My phone number is {phone}.", sid_db)
+        post_process(f"What times are available on {date_a}?", sid_db)
         r7 = post_process(
-            f"Book Another Person at {phone} same day {date_a} at 09:00.",
-            f"{session}-db",
+            f"Please book me as Morgan Lee with my number {phone} on {date_a} at 09:00.",
+            sid_db,
         )
         te7 = r7.get("tool_execution")
+        err = (te7 or {}).get("error") if isinstance(te7, dict) else None
+        code = err.get("code", "") if isinstance(err, dict) else ""
+        msg = str(err.get("message", "")).lower() if isinstance(err, dict) else ""
         ok7 = (
             isinstance(te7, dict)
             and te7.get("success") is False
-            and te7.get("error", {}).get("code") == "double_booking"
+            and (
+                code == "double_booking"
+                or (
+                    code == "validation_error"
+                    and (
+                        # Occupied slots are omitted from fetch_slots → gate rejects the time.
+                        "not in the available slots" in msg
+                        or "not a clinic slot" in msg
+                    )
+                )
+            )
         )
-        expect("7_double_book_via_process_blocked", ok7, (te7 or {}).get("error", {}).get("code", ""))
+        expect("7b_double_book_via_process_blocked", ok7, f"code={code}")
     except Exception as e:
-        expect("7_double_book", False, str(e))
+        expect("7_process_double", False, str(e))
 
     try:
         inv8 = post_invoke(
