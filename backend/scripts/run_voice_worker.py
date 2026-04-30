@@ -26,4 +26,7 @@ if str(_BACKEND) not in sys.path:
 from app.lk_agents.voice_agent import run_worker
 
 if __name__ == "__main__":
+    # livekit-agents CLI is Typer-based: requires ``start`` (prod-like) or ``dev`` (reload).
+    if len(sys.argv) == 1:
+        sys.argv.append("start")
     run_worker()

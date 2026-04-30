@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from livekit import rtc
 from livekit.agents import AgentSession, JobContext, WorkerOptions, cli, function_tool, stt
 from livekit.agents.job import AutoSubscribe
 from livekit.agents.voice import Agent
 from livekit.agents.voice.events import RunContext
+from livekit.agents.voice.room_io.types import AudioOutputOptions, RoomOptions, TextOutputOptions
 from livekit.plugins import openai as lk_openai
 from livekit.plugins import silero
 
@@ -199,13 +199,26 @@ async def entrypoint(ctx: JobContext) -> None:
     from app.db.database import connect, init_db
 
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-    participant = await ctx.wait_for_participant()
+    try:
+        participant = await ctx.wait_for_participant()
+    except RuntimeError as exc:
+        # Common when the browser reconnects / Strict Mode unmount disconnects early.
+        if "disconnect" in str(exc).lower():
+            logger.info("LiveKit job exit: %s", exc)
+            return
+        raise
     identity = str(getattr(participant, "identity", None) or "voice-user")
 
     conn = connect()
     init_db(conn)
 
     api_base = os.getenv("VOICE_API_BASE", "http://127.0.0.1:8000").strip().rstrip("/")
+    publish_sr_raw = os.getenv("VOICE_PUBLISH_SAMPLE_RATE", "").strip()
+    publish_sr = (
+        int(publish_sr_raw)
+        if publish_sr_raw
+        else 24_000  # Same default as LiveKit agents RoomIO AudioOutputOptions
+    )
     ollama_url = f"{ollama_base_url().rstrip('/')}/v1"
     model = (os.getenv("OLLAMA_MODEL") or "qwen2.5:7b-instruct").strip()
 
@@ -219,7 +232,7 @@ async def entrypoint(ctx: JobContext) -> None:
         base_url=ollama_url,
         api_key="ollama",
     )
-    tts_engine = FastApiPiperTTS(base_url=api_base)
+    tts_engine = FastApiPiperTTS(base_url=api_base, publish_sample_rate=publish_sr)
 
     instructions = _voice_system_instructions() + "\n---\nResponse tone:\n" + FINALIZE_SYSTEM
     agent = Agent(instructions=instructions, tools=_HEALTH_TOOLS)
@@ -232,8 +245,23 @@ async def entrypoint(ctx: JobContext) -> None:
         userdata=userdata,
     )
 
+    sync_captions_to_audio = os.getenv(
+        "VOICE_SYNC_TRANSCRIPTION_TO_AUDIO",
+        "",
+    ).strip().lower() in ("1", "true", "yes")
+    text_output_opts = (
+        TextOutputOptions()
+        if sync_captions_to_audio
+        else TextOutputOptions(sync_transcription=False)
+    )
+
+    room_options = RoomOptions(
+        audio_output=AudioOutputOptions(sample_rate=publish_sr),
+        text_output=text_output_opts,
+    )
+
     try:
-        await session.start(agent=agent, room=ctx.room)
+        await session.start(agent=agent, room=ctx.room, room_options=room_options)
     finally:
         conn.close()
 

@@ -12,7 +12,7 @@ Monorepo: **FastAPI** backend (SQLite, Ollama, faster-whisper, Piper) and **Next
 | **FastAPI** (`backend/`)       | HTTP API, `POST /stt`, `POST /tts`, `POST /tools/invoke`, WebSockets (`/ws/agent`, `/ws/conversation_audio`), `GET /livekit/token`, SQLite                                                             |
 | **Ollama**                     | LLM inference (OpenAI-compatible `/v1` used by the API and by the LiveKit worker)                                                                                                                      |
 | **Browser — main path**        | `/call` can use REST + **WebSocket** voice; STT/TTS/agent run **inside FastAPI**                                                                                                                       |
-| **Browser — optional LiveKit** | WebRTC mic → **livekit-agents** worker: VAD, batch STT (same faster-whisper stack as `/stt`), LLM (Ollama), TTS via `**POST {VOICE_API_BASE}/tts`** (Piper), tools via **same SQLite file** as the API |
+| **Browser — optional LiveKit** | WebRTC mic → **livekit-agents** worker: VAD, batch STT (same faster-whisper stack as `/stt`), LLM (Ollama), TTS via `POST {VOICE_API_BASE}/tts` (Piper), tools via **same SQLite file** as the API |
 
 
 LiveKit does **not** replace FastAPI: the worker calls the API for TTS and shares the DB file for tool execution.
@@ -52,9 +52,9 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `backend/.env` at minimum: `**PIPER_BINARY**`, `**PIPER_VOICE**`, `**OLLAMA_MODEL**` (see comments in `[.env.example](backend/.env.example)`). For GPU STT without system CUDA BLAS, see `[backend/requirements-whisper-gpu.txt](backend/requirements-whisper-gpu.txt)`.
+Edit `backend/.env` at minimum: `PIPER_BINARY`, `PIPER_VOICE`, `OLLAMA_MODEL` (see comments in `[backend/.env.example](backend/.env.example)`). For GPU STT without system CUDA BLAS, see `[backend/requirements-whisper-gpu.txt](backend/requirements-whisper-gpu.txt)`.
 
-With venv **still active** and cwd `**backend/`**:
+With venv **still active** and cwd `backend/`:
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -69,7 +69,7 @@ ollama serve
 ollama pull qwen2.5:7b-instruct
 ```
 
-(Or use `[scripts/run_with_tools.sh](scripts/run_with_tools.sh)` if tools live under `.tools/ollama/`.)
+(Or use [`scripts/run_with_tools.sh`](scripts/run_with_tools.sh) if tools live under `.tools/ollama/`.)
 
 ### 3. Frontend
 
@@ -80,14 +80,14 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Set `**NEXT_PUBLIC_API_URL**` in `.env.local` to your API (default `http://localhost:8000`).
+Set `NEXT_PUBLIC_API_URL` in `.env.local` to your API (default `http://localhost:8000`).
 
 ### 4. Open the app
 
 - UI: [http://localhost:3000/call](http://localhost:3000/call)
 - API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-If `**next dev**` errors with `**Cannot find module './NNN.js'**`, run `**npm run dev:fresh**` or `**npm run clean && npm run dev**`.
+If `next dev` errors with `Cannot find module './NNN.js'`, run `npm run dev:fresh` or `npm run clean && npm run dev`.
 
 ## LiveKit voice (optional)
 
@@ -99,12 +99,12 @@ Use this when you want **browser WebRTC** + **livekit-agents** instead of (or al
   ```bash
    docker compose -f docker-compose.livekit.yml up -d
   ```
-   In dev, logs usually print `**LIVEKIT_API_KEY**` / `**LIVEKIT_API_SECRET**`. Copy them into `**backend/.env**` (never commit secrets).
+   In dev, logs usually print `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`. Copy them into `backend/.env` (never commit secrets).
 2. **Backend env** (`backend/.env`):
   - `LIVEKIT_URL` — e.g. `ws://127.0.0.1:7880` (must match the server).
   - `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — must match the server.
   - `VOICE_API_BASE` — URL of **this** FastAPI app as the worker will call it (default `http://127.0.0.1:8000`). Change if the API listens elsewhere.
-  - The worker reuses `**OLLAMA_*`** / `**OLLAMA_MODEL**` from the same file when API and worker run on one machine.
+  - The worker reuses `OLLAMA_*` / `OLLAMA_MODEL` from the same file when API and worker run on one machine.
 3. **Worker dependencies** (venv active, `cd backend/`):
   ```bash
    pip install -r requirements-livekit.txt
@@ -133,13 +133,13 @@ Use this when you want **browser WebRTC** + **livekit-agents** instead of (or al
 
 | Topic      | Detail                                                                                                                                            |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Path**   | `**DATABASE_PATH`** in `backend/.env`. Relative paths resolve from the **process cwd**—run `**uvicorn` from `backend/`** or use an absolute path. |
+| **Path**   | `DATABASE_PATH` in `backend/.env`. Relative paths resolve from the **process cwd**—run `uvicorn` from `backend/` or use an absolute path. |
 | **Init**   | `CREATE TABLE IF NOT EXISTS` on startup (`[backend/app/db/database.py](backend/app/db/database.py)`).                                             |
-| **Tables** | `appointments`; optional `conversation_messages` when `**CONVERSATION_PERSIST=1`**.                                                               |
+| **Tables** | `appointments`; optional `conversation_messages` when `CONVERSATION_PERSIST=1`.                                                               |
 | **Reset**  | Stop API, delete/replace the DB file, restart.                                                                                                    |
 
 
-Dev-only: `**ENABLE_DB_INSPECT=1`** enables `[GET /internal/db/snapshot](http://127.0.0.1:8000/internal/db/snapshot)`.
+Dev-only: `ENABLE_DB_INSPECT=1` enables [`GET /internal/db/snapshot`](http://127.0.0.1:8000/internal/db/snapshot).
 
 ## Configuration reference
 
@@ -150,19 +150,19 @@ Templates: `[backend/.env.example](backend/.env.example)`, `[frontend/.env.local
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **CORS**         | `CORS_ORIGINS` must include the Next.js origin in production.                                                                                               |
 | **Transcripts**  | `CONVERSATION_PERSIST=1` keeps dialogue in SQLite for `POST /agent/summary` across restarts.                                                                |
-| **Phone locale** | Optional `PHONE_DEFAULT_CC` (e.g. `**880`** / `bd` vs UK `**07…**` → `**+44**`).                                                                            |
+| **Phone locale** | Optional `PHONE_DEFAULT_CC` (e.g. **880** / `bd` vs UK **07…** → **+44**).                                                                            |
 | **STT / GPU**    | `WHISPER_DEVICE`, `CUDA_LIBRARY_PATH`, etc.—see `.env.example` and README notes in `[requirements-whisper-gpu.txt](backend/requirements-whisper-gpu.txt)`.  |
 | **LiveKit**      | Backend: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `VOICE_API_BASE`. Frontend: `NEXT_PUBLIC_LIVEKIT_URL`, `NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM`. |
 
 
-Optional vendor paths under `**.tools/`** are documented in `backend/.env.example`.
+Optional vendor paths under `.tools/` are documented in `backend/.env.example`.
 
 ## Tests
 
 ```bash
 source backend/.venv/bin/activate
 cd backend
-PYTHONPATH=. python -m pytest tests/ -q
+python -m pytest tests/ -q
 bash scripts/qa_scenario_matrix.sh
 ```
 

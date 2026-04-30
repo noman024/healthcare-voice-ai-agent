@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _tts_gpu_lock = Lock()
 _tts_gpu_rr = 0
+_length_scale_slow_warned = False
 
 
 class TTSError(RuntimeError):
@@ -33,6 +34,48 @@ def _resolve_piper_binary(binary: str) -> str:
     if w:
         return str(Path(w).resolve())
     return binary
+
+
+def _piper_length_scale_args() -> list[str]:
+    """Optional ``--length_scale``: <1 shortens phonemes (faster speech), >1 lengthens (slower)."""
+    raw = os.getenv("PIPER_LENGTH_SCALE", "").strip()
+    if not raw:
+        return []
+    try:
+        v = float(raw.replace(",", "."))
+    except ValueError:
+        logger.warning("PIPER_LENGTH_SCALE invalid (%r); using Piper default", raw)
+        return []
+    if v <= 0 or v != v:  # reject NaN
+        return []
+    v = max(0.5, min(2.5, v))
+    if abs(v - 1.0) < 1e-6:
+        return []
+    global _length_scale_slow_warned
+    if v > 1.25 and not _length_scale_slow_warned:
+        _length_scale_slow_warned = True
+        logger.warning(
+            "PIPER_LENGTH_SCALE=%s makes speech slower; values >1 lengthen Piper output. "
+            "For normal speed unset PIPER_LENGTH_SCALE or use ~0.9–1.05.",
+            v,
+        )
+    return ["--length_scale", str(v)]
+
+
+def _piper_sentence_silence_args() -> list[str]:
+    """Optional ``--sentence_silence`` (seconds between sentences; Piper default 0.2)."""
+    raw = os.getenv("PIPER_SENTENCE_SILENCE", "").strip()
+    if not raw:
+        return []
+    try:
+        v = float(raw.replace(",", "."))
+    except ValueError:
+        logger.warning("PIPER_SENTENCE_SILENCE invalid (%r); ignored", raw)
+        return []
+    if v < 0 or v != v:
+        return []
+    v = min(2.0, v)
+    return ["--sentence_silence", str(v)]
 
 
 def _pick_piper_cuda_visible_device() -> str | None:
@@ -89,6 +132,8 @@ def synthesize_wav_bytes(text: str) -> bytes:
     - `PIPER_VOICE`: path to `.onnx` model (and `.onnx.json` alongside, per Piper)
     - optional `PIPER_BINARY`: path to `piper` (default: resolve via PATH)
     - optional `PIPER_LD_LIBRARY_PATH`: dir containing Piper shared libs (default: Piper binary dir)
+    - optional `PIPER_LENGTH_SCALE`: Piper ``--length_scale`` (default ~1.0). **<1** = faster speech (try 0.88–0.95), **>1** = slower (try 1.05–1.15).
+    - optional `PIPER_SENTENCE_SILENCE`: Piper ``--sentence_silence`` seconds after each sentence (default 0.2; lower e.g. 0.1 for snappier multi-sentence replies).
     """
     text = text.strip()
     if not text:
@@ -105,8 +150,17 @@ def synthesize_wav_bytes(text: str) -> bytes:
     binary = _resolve_piper_binary(raw_bin)
 
     def _run_piper(env: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
+        cmd = [
+            binary,
+            "--model",
+            str(vpath.resolve()),
+            "--output_file",
+            str(out_path),
+            *_piper_length_scale_args(),
+            *_piper_sentence_silence_args(),
+        ]
         return subprocess.run(
-            [binary, "--model", str(vpath.resolve()), "--output_file", str(out_path)],
+            cmd,
             input=text.encode("utf-8"),
             capture_output=True,
             timeout=int(os.getenv("PIPER_TIMEOUT_SEC", "120")),

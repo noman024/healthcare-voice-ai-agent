@@ -6,7 +6,7 @@ import queue
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 from dotenv import load_dotenv
@@ -91,6 +91,17 @@ def livekit_token(
         return try_build_livekit_token(room=r, identity=ident, name=(name or "").strip() or None)
     except RuntimeError as e:
         return JSONResponse(status_code=503, content={"detail": str(e)})
+
+
+@app.get("/livekit/status")
+def livekit_status() -> dict[str, bool]:
+    """
+    Whether this API instance can mint LiveKit tokens (env keys installed).
+    Browsers skip a failing token probe when ``false``.
+    """
+    from app.livekit_tokens import livekit_token_service_enabled
+
+    return {"token_service_enabled": livekit_token_service_enabled()}
 
 
 @app.get("/")
@@ -443,12 +454,12 @@ def process_endpoint(body: ProcessBody, request: Request) -> dict[str, Any]:
 @app.post("/conversation")
 async def conversation_endpoint(
     request: Request,
-    audio: Optional[UploadFile] = File(None),
+    audio: UploadFile | None = File(None),
     session_id: str = Form("default"),
-    conversation_id: Optional[str] = Form(None),
-    language: Optional[str] = Form(None),
+    conversation_id: str | None = Form(None),
+    language: str | None = Form(None),
     return_speech: bool = Form(True),
-    message: Optional[str] = Form(None),
+    message: str | None = Form(None),
 ) -> dict[str, Any]:
     """
     Multipart-only: send either field `audio` (file: STT → agent) or `message` (string: text → agent).

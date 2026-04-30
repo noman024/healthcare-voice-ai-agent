@@ -23,3 +23,17 @@ def test_livekit_token_returns_jwt_when_configured(api_client, monkeypatch):
     assert body["room"] == "clinic"
     assert body["identity"] == "tester"
     assert isinstance(body["token"], str) and len(body["token"]) > 20
+
+
+def test_livekit_status_reflects_configuration(api_client, monkeypatch):
+    monkeypatch.delenv("LIVEKIT_API_KEY", raising=False)
+    monkeypatch.delenv("LIVEKIT_API_SECRET", raising=False)
+    r = api_client.get("/livekit/status")
+    assert r.status_code == 200
+    assert r.json() == {"token_service_enabled": False}
+
+    monkeypatch.setenv("LIVEKIT_API_KEY", "k")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "s")
+    r2 = api_client.get("/livekit/status")
+    assert r2.status_code == 200
+    assert r2.json() == {"token_service_enabled": True}
