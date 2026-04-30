@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    /** Default ~30s breaks ``/avatar/lipsync`` → FastAPI → MuseTalk (see frontend ``Failed to proxy`` ECONNRESET in logs). */
+    proxyTimeout: 300_000,
+  },
   /**
    * Do not customize webpack cache in dev: forcing `memory` was linked to missing
    * `./948.js` chunk errors (broken server bundle graph until `.next` is wiped).
