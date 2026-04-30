@@ -8,7 +8,6 @@ import os
 import time
 import sqlite3
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -124,31 +123,6 @@ def process_audio_bytes(
         "stt_elapsed_ms": stt_elapsed_ms,
         "audio_byte_len": audio_byte_len,
     }
-
-
-def process_audio_message(
-    conn: sqlite3.Connection,
-    *,
-    audio_path: str | Path,
-    session_id: str,
-    language: str | None,
-    return_speech: bool,
-    conversation_id: str | None = None,
-    client: httpx.Client | None = None,
-) -> dict[str, Any]:
-    """Audio file → STT → agent → optional Speech-Out as base64 WAV."""
-    path = Path(audio_path)
-    data = path.read_bytes()
-    return process_audio_bytes(
-        conn,
-        audio_bytes=data,
-        file_suffix=path.suffix or ".wav",
-        session_id=session_id,
-        language=language,
-        return_speech=return_speech,
-        conversation_id=conversation_id,
-        client=client,
-    )
 
 
 def iter_chunked_audio_turn_events(

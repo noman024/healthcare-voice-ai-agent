@@ -4,25 +4,25 @@ import httpx
 
 
 def test_health_llm_success(monkeypatch, api_client):
-    import app.main as main_mod
+    import app.routers.health as health_mod
 
     def fake_probe(base_url: str):
         req = httpx.Request("GET", f"{base_url}/api/tags")
         return httpx.Response(200, json={"models": []}, request=req)
 
-    monkeypatch.setattr(main_mod, "_ollama_tags_get", fake_probe)
+    monkeypatch.setattr(health_mod, "_ollama_tags_get", fake_probe)
     r = api_client.get("/health/llm")
     assert r.status_code == 200
     assert r.json()["ollama"] == "ok"
 
 
 def test_health_llm_unavailable(monkeypatch, api_client):
-    import app.main as main_mod
+    import app.routers.health as health_mod
 
     def fake_probe(base_url: str):
         raise httpx.ConnectError("refused", request=None)
 
-    monkeypatch.setattr(main_mod, "_ollama_tags_get", fake_probe)
+    monkeypatch.setattr(health_mod, "_ollama_tags_get", fake_probe)
     r = api_client.get("/health/llm")
     assert r.status_code == 503
     assert r.json()["ollama"] == "unavailable"

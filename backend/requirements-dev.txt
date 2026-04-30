@@ -1,0 +1,4 @@
+# Development and CI test dependencies (install after core deps).
+-r requirements.txt
+
+pytest>=8.0,<9.0

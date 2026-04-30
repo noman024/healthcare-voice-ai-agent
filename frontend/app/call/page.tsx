@@ -1,288 +1,47 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  TTS_BARGE_IN_GRACE_MS,
+  VAD_BARGE_IN_LOUD_TICKS,
+  VAD_BARGE_RMS_MULT,
+  VAD_INTERVAL_MS,
+  VAD_LOUD_TICKS_TO_START,
+  VAD_MIN_UTTERANCE_MS,
+  VAD_QUIET_TICKS_TO_END,
+  VAD_RMS_THRESHOLD,
+  pcmRmsTimeDomain,
+  playWavBase64,
+} from "./audioPlayback";
 import AvatarVoice from "./AvatarVoice";
+import type {
+  AgentPayload,
+  CallSummaryPayload,
+  FeedItem,
+  TranscriptEntry,
+} from "./callTypes";
+import { DEFAULT_API_URL } from "./callTypes";
+import {
+  buildActivityFeed,
+  coerceNonNegInt,
+  coerceOffsetMs,
+  coerceVaLast,
+  coerceVaSeq,
+  httpToWsBase,
+  mergeTtsWavChunks,
+  newId,
+  suggestedSessionIdFromResult,
+  toolExecutionStatusBanner,
+} from "./callUtils";
 import LiveKitPanel, {
   DEFAULT_PUBLIC_LIVEKIT_ROOM_NAME,
   sanitizeLiveKitIdentity,
   sanitizeLiveKitRoomName,
 } from "./LiveKitPanel";
 
-const defaultApiUrl = "http://localhost:8000";
-
-type FeedTone = "neutral" | "ok" | "warn";
-type FeedItem = { id: string; label: string; tone: FeedTone };
-type AgentPayload = Record<string, unknown>;
-
-type TranscriptEntry = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  at: number;
-};
-
-function httpToWsBase(httpUrl: string): string {
-  return httpUrl.trim().replace(/\/$/, "").replace(/^http/, "ws");
-}
-
-/** Reassemble base64-encoded byte chunks from the LiveKit worker into a WAV ``Uint8Array``. */
-function mergeTtsWavChunks(parts: Map<number, string>): Uint8Array {
-  const keys = [...parts.keys()].sort((a, b) => a - b);
-  const chunks: Uint8Array[] = [];
-  for (const k of keys) {
-    const b64 = parts.get(k);
-    if (!b64) continue;
-    const bin = atob(b64);
-    const u8 = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-    chunks.push(u8);
-  }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const out = new Uint8Array(total);
-  let o = 0;
-  for (const c of chunks) {
-    out.set(c, o);
-    o += c.length;
-  }
-  return out;
-}
-
-/** Accept JSON where numeric fields may arrive as strings after relay/parse. */
-function coerceVaSeq(v: unknown): number {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "") {
-    const n = Number(v);
-    if (Number.isFinite(n)) return n;
-  }
-  return -1;
-}
-
-function coerceVaLast(v: unknown): boolean {
-  return v === true || v === "true" || v === 1 || v === "1";
-}
-
-function coerceOffsetMs(v: unknown): number {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "") {
-    const n = Number(v);
-    if (Number.isFinite(n)) return n;
-  }
-  return 0;
-}
-
-function coerceNonNegInt(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return Math.floor(v);
-  if (typeof v === "string" && v.trim() !== "") {
-    const n = Number(v);
-    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-  }
-  return null;
-}
-
-function summarizeTool(tool: unknown): string {
-  const t = typeof tool === "string" ? tool : "";
-  const labels: Record<string, string> = {
-    none: "Thinking…",
-    identify_user: "Identifying…",
-    fetch_slots: "Loading availability…",
-    book_appointment: "Booking…",
-    retrieve_appointments: "Loading appointments…",
-    cancel_appointment: "Cancelling…",
-    modify_appointment: "Updating…",
-    end_conversation: "Ending…",
-  };
-  return labels[t] ?? (t ? `${t}` : "Working…");
-}
-
-function buildActivityFeed(result: AgentPayload): FeedItem[] {
-  const out: FeedItem[] = [];
-  const planRaw = result.plan;
-  const plan =
-    planRaw && typeof planRaw === "object" ? (planRaw as Record<string, unknown>) : null;
-  const intent =
-    typeof plan?.intent === "string"
-      ? plan.intent
-      : typeof result.intent === "string"
-        ? result.intent
-        : "";
-  if (intent) out.push({ id: "intent", label: intent, tone: "neutral" });
-  const tool = typeof plan?.tool === "string" ? plan.tool : "";
-  if (tool && tool !== "none") {
-    out.push({ id: "tool-plan", label: summarizeTool(tool), tone: "neutral" });
-  }
-  const teRaw = result.tool_execution;
-  if (teRaw && typeof teRaw === "object") {
-    const te = teRaw as Record<string, unknown>;
-    const phase = typeof te.phase === "string" ? te.phase : "";
-    const ok = te.success === true;
-    const errMsg =
-      typeof (te.error as Record<string, unknown> | undefined)?.message === "string"
-        ? String((te.error as { message?: string }).message)
-        : "Failed";
-    const toolTag = typeof te.tool === "string" ? te.tool : tool;
-    if (phase === "running" && toolTag) {
-      out.push({
-        id: "tool-running",
-        label: summarizeTool(toolTag),
-        tone: "neutral",
-      });
-    } else if (toolTag) {
-      out.push({
-        id: "tool-done",
-        label: ok ? `${toolTag} · OK` : `${toolTag} · ${errMsg}`,
-        tone: ok ? "ok" : "warn",
-      });
-    }
-  }
-  const warn = typeof result.warning === "string" ? result.warning : "";
-  if (warn) out.push({ id: "warn", label: warn, tone: "warn" });
-  return out;
-}
-
-type PlaybackAnalyserRef = MutableRefObject<AnalyserNode | null>;
-type TtsLifecycleRef = MutableRefObject<{ stop: () => void } | null>;
-
-/** Hands-free: endpoint speech after ~800ms silence; barge-in after a few loud ticks during TTS. */
-const VAD_INTERVAL_MS = 50;
-const VAD_RMS_THRESHOLD = 0.036;
-const VAD_LOUD_TICKS_TO_START = 2;
-const VAD_QUIET_TICKS_TO_END = 16;
-const VAD_MIN_UTTERANCE_MS = 450;
-const VAD_BARGE_IN_LOUD_TICKS = 3;
-/** After TTS starts, ignore barge-in this long (ms) so speaker→mic bleed does not cancel playback. */
-const TTS_BARGE_IN_GRACE_MS = 1_400;
-/** Stricter RMS multiplier for barge vs VAD (echo is often below true user interrupt). */
-const VAD_BARGE_RMS_MULT = 3.25;
-
-function pcmRmsTimeDomain(analyser: AnalyserNode): number {
-  const buf = new Uint8Array(analyser.fftSize);
-  analyser.getByteTimeDomainData(buf);
-  let sum = 0;
-  for (let i = 0; i < buf.length; i++) {
-    const v = (buf[i]! - 128) / 128;
-    sum += v * v;
-  }
-  return Math.sqrt(sum / buf.length);
-}
-
-/** Decodes and plays WAV base64; optional lifecycle ``stop`` cuts audio (barge-in). */
-async function playWavBase64(
-  base64: string,
-  playbackAnalyserRef?: PlaybackAnalyserRef,
-  lifecycleRef?: TtsLifecycleRef,
-): Promise<void> {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  const AC =
-    typeof window !== "undefined"
-      ? window.AudioContext ||
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-      : null;
-  if (!AC) {
-    const blob = new Blob([bytes], { type: "audio/wav" });
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        let finished = false;
-        const done = () => {
-          if (finished) return;
-          finished = true;
-          if (lifecycleRef) lifecycleRef.current = null;
-          resolve();
-        };
-        audio.onended = () => done();
-        if (lifecycleRef) {
-          lifecycleRef.current = {
-            stop: () => {
-              audio.pause();
-              audio.currentTime = 0;
-              done();
-            },
-          };
-        }
-        void audio.play().catch(reject);
-      });
-    } finally {
-      URL.revokeObjectURL(url);
-      if (lifecycleRef) lifecycleRef.current = null;
-    }
-    return;
-  }
-  const ac = new AC();
-  try {
-    const buf = await ac.decodeAudioData(ab.slice(0));
-    const src = ac.createBufferSource();
-    const an = ac.createAnalyser();
-    an.fftSize = 256;
-    an.smoothingTimeConstant = 0.45;
-    src.buffer = buf;
-    src.connect(an);
-    an.connect(ac.destination);
-    if (playbackAnalyserRef) playbackAnalyserRef.current = an;
-
-    const teardown = () => {
-      if (playbackAnalyserRef) playbackAnalyserRef.current = null;
-      if (lifecycleRef) lifecycleRef.current = null;
-    };
-
-    if (lifecycleRef) {
-      lifecycleRef.current = {
-        stop: () => {
-          try {
-            src.stop(0);
-          } catch {
-            /* already ended */
-          }
-        },
-      };
-    }
-
-    await ac.resume();
-    await new Promise<void>((resolve) => {
-      src.onended = () => {
-        teardown();
-        resolve();
-      };
-      src.start(0);
-    });
-  } finally {
-    await ac.close().catch(() => undefined);
-    if (playbackAnalyserRef) playbackAnalyserRef.current = null;
-    if (lifecycleRef) lifecycleRef.current = null;
-  }
-}
-
-type CallSummaryPayload = {
-  summary: string;
-  generated_at?: string;
-  appointments?: Array<{
-    id: number;
-    name: string;
-    phone: string;
-    date: string;
-    time: string;
-    status: string;
-    created_at: string;
-  }>;
-  user_preferences?: string[];
-  phone?: string | null;
-  cost_hints?: Record<string, unknown>;
-  conversation_id?: string;
-};
-
-function newId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
 export default function CallPage() {
-  const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? defaultApiUrl).replace(/\/$/, "");
+  const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).replace(/\/$/, "");
   /** When set, browser POSTs lipsync here (e.g. dedicated :8001 service). Defaults to main API (proxy path). */
   const musetalkApiBase = useMemo(
     () => (process.env.NEXT_PUBLIC_MUSETALK_API_URL ?? "").trim().replace(/\/$/, "") || baseUrl,
@@ -294,8 +53,12 @@ export default function CallPage() {
   }, [musetalkApiBase]);
   const wsBase = httpToWsBase(baseUrl);
 
-  /** Stable per-tab room id; assigned only after mount to avoid SSR/client hydration mismatches. */
+  /**
+   * Stable per-tab transcript + summary key (``conversation_id`` / persistence_session_id).
+   * Never reset when switching text ↔ voice or WebSocket ↔ LiveKit so SQLite mirrors stay consistent.
+   */
   const [conversationId, setConversationId] = useState("");
+  /** Tool/booking session id — after identify_user should match normalized phone (all transports). */
   const [sessionId, setSessionId] = useState("");
 
   useEffect(() => {
@@ -775,7 +538,7 @@ export default function CallPage() {
           const base = typeof prev === "object" && prev !== null ? prev : {};
           const next = { ...base, tool_execution: te } as AgentPayload;
           queueMicrotask(() => {
-            setStatusLine(buildActivityFeed(next).slice(-4));
+            setStatusLine(buildActivityFeed(next).slice(-8));
           });
           return next;
         });
@@ -788,7 +551,7 @@ export default function CallPage() {
 
   useEffect(() => {
     const feedItems = result ? buildActivityFeed(result) : [];
-    setStatusLine(feedItems.slice(-4));
+    setStatusLine(feedItems.slice(-8));
   }, [result]);
 
   useEffect(() => {
@@ -805,10 +568,10 @@ export default function CallPage() {
     if (tool === "end_conversation") void fetchSummary();
   }, [result, fetchSummary]);
 
+  /** Same phone session for REST, WebSocket, and LiveKit (worker only sends ``tool_execution`` for tools). */
   useEffect(() => {
-    if (!result || !syncSessionToPhone) return;
-    const si = result["session_identity"] as { suggested_session_id?: string } | undefined;
-    const next = typeof si?.suggested_session_id === "string" ? si.suggested_session_id.trim() : "";
+    if (!syncSessionToPhone || !result) return;
+    const next = suggestedSessionIdFromResult(result);
     if (next && next !== sessionId.trim()) setSessionId(next);
   }, [result, syncSessionToPhone, sessionId]);
 
@@ -1056,13 +819,13 @@ export default function CallPage() {
                   tool_execution: null,
                 }).filter((x) => x.id !== "tool-done"),
               ];
-              setStatusLine(feedAcc.slice(-4));
+              setStatusLine(feedAcc.slice(-8));
               return;
             }
             if (t === "tool" && typeof payload.tool_execution === "object") {
               feedAcc = [...feedAcc];
               feedAcc.push(...buildActivityFeed({ plan: {}, tool_execution: payload.tool_execution }));
-              setStatusLine(feedAcc.slice(-4));
+              setStatusLine(feedAcc.slice(-8));
               return;
             }
             if (t === "done") {
@@ -1445,6 +1208,16 @@ export default function CallPage() {
       voiceBackend === "livekit" &&
       (liveKitSurfaceOn || liveKitMicLive));
 
+  const transportLabel = useMemo(() => {
+    if (chatMode === "text") return "Text";
+    return voiceBackend === "livekit" ? "Voice · LiveKit" : "Voice · WebSocket";
+  }, [chatMode, voiceBackend]);
+
+  const headerToolBanner = useMemo(
+    () => toolExecutionStatusBanner(result?.tool_execution),
+    [result],
+  );
+
   return (
     <div className="flex min-h-[100dvh] flex-col bg-[#121212] font-sans text-zinc-100">
       {/* Top bar — Meet-like */}
@@ -1472,6 +1245,39 @@ export default function CallPage() {
           </Link>
         </div>
       </header>
+
+      <div
+        className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-zinc-800/60 bg-zinc-950/55 px-4 py-2 text-[11px] text-zinc-400 md:px-6"
+        role="status"
+        aria-live="polite"
+      >
+        <span className="rounded-md bg-zinc-800/90 px-2 py-0.5 font-medium text-zinc-200">{transportLabel}</span>
+        <span className="hidden text-zinc-600 sm:inline" aria-hidden>
+          ·
+        </span>
+        <span title={`Transcript + DB persistence key — unchanged when switching text / WebSocket / LiveKit: ${conversationId}`}>
+          Chat key:{" "}
+          <code className="rounded bg-zinc-900 px-1 font-mono text-zinc-200">
+            {roomReady ? `${conversationId.slice(0, 12)}…` : "…"}
+          </code>
+        </span>
+        <span className="hidden text-zinc-600 sm:inline" aria-hidden>
+          ·
+        </span>
+        <span title="Tool/booking session id for the API (normalized phone after a successful identify_user when sync is on)">
+          Session: <code className="rounded bg-zinc-900 px-1 font-mono text-zinc-200">{sessionId || "…"}</code>
+        </span>
+        {headerToolBanner ? (
+          <>
+            <span className="hidden text-zinc-600 sm:inline" aria-hidden>
+              ·
+            </span>
+            <span className="max-w-[min(100%,28rem)] truncate font-medium text-teal-300/95" title={headerToolBanner}>
+              Tool: {headerToolBanner}
+            </span>
+          </>
+        ) : null}
+      </div>
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Stage — lg:order-2 puts the avatar on the right on wide screens */}
@@ -1512,10 +1318,15 @@ export default function CallPage() {
           </div>
 
           <div className="mt-8 w-full max-w-lg space-y-2">
-            {statusLine.length > 0 ? (
+            {(statusLine.length > 0 || busy) ? (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 py-2">
-                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Status</p>
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  Agent activity
+                </p>
                 <ul className="space-y-1 text-xs text-zinc-300">
+                  {statusLine.length === 0 && busy ? (
+                    <li className="text-zinc-500">Processing…</li>
+                  ) : null}
                   {statusLine.map((f, idx) => (
                     <li
                       key={`${idx}-${f.id}`}

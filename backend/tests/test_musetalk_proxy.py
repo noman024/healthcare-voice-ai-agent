@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-@patch("app.main.httpx.AsyncClient")
+@patch("app.routers.avatar.httpx.AsyncClient")
 def test_lipsync_status_proxies_to_service(mock_client_cls, api_client, monkeypatch):
     monkeypatch.setenv("MUSETALK_SERVICE_URL", "http://musetalk.test:8001")
     mock_resp = MagicMock()
@@ -23,7 +23,7 @@ def test_lipsync_status_proxies_to_service(mock_client_cls, api_client, monkeypa
     instance.get.assert_awaited_once_with("http://musetalk.test:8001/avatar/lipsync/status")
 
 
-@patch("app.main.httpx.AsyncClient")
+@patch("app.routers.avatar.httpx.AsyncClient")
 def test_lipsync_post_proxies_multipart(mock_client_cls, api_client, monkeypatch):
     monkeypatch.setenv("MUSETALK_SERVICE_URL", "http://musetalk.test:8001")
     mock_resp = MagicMock()
@@ -46,7 +46,7 @@ def test_lipsync_post_proxies_multipart(mock_client_cls, api_client, monkeypatch
     assert "audio" in files_kw
 
 
-@patch("app.main.httpx.AsyncClient")
+@patch("app.routers.avatar.httpx.AsyncClient")
 def test_avatar_reference_proxies_to_service(mock_client_cls, api_client, monkeypatch):
     monkeypatch.setenv("MUSETALK_SERVICE_URL", "http://musetalk.test:8001")
     mock_resp = MagicMock()

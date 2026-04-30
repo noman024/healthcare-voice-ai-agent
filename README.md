@@ -34,6 +34,19 @@ LiveKit does **not** replace FastAPI: the worker calls the API for TTS and share
 
 Some specs reference **Deepgram** (STT), **Cartesia** (TTS), and **Tavus / Beyond Presence** (avatar). This repo uses **faster-whisper**, **Piper**, **Ollama**, and optional **MuseTalk** instead. Replacing providers means changing STT/TTS wiring in [`backend/app/lk_agents/voice_agent.py`](backend/app/lk_agents/voice_agent.py) and related FastAPI routes—not a single env toggle today.
 
+## Repository layout
+
+| Path | Role |
+|------|------|
+| [`backend/app/main.py`](backend/app/main.py) | FastAPI app factory, lifespan, CORS |
+| [`backend/app/routers/`](backend/app/routers/) | HTTP and WebSocket routes (health, LiveKit, agent, audio, avatar, internal) |
+| [`backend/app/agent/`](backend/app/agent/) | LLM planner/finalizer runner, memory, guards |
+| [`backend/app/tools/`](backend/app/tools/) | SQLite-backed tool execution + validation |
+| [`backend/app/conversation/`](backend/app/conversation/) | Text/audio pipelines and WebSocket batch finalize |
+| [`backend/app/lk_agents/`](backend/app/lk_agents/) | LiveKit worker: `voice_agent.py`, STT/TTS adapters, publish/transcript helpers |
+| [`backend/app/musetalk/`](backend/app/musetalk/) | Optional lip-sync API and inference bridge |
+| [`backend/app/db/`](backend/app/db/) | SQLite schema and repositories |
+| [`frontend/app/call/`](frontend/app/call/) | `/call` UI: [`page.tsx`](frontend/app/call/page.tsx), shared [`callUtils.ts`](frontend/app/call/callUtils.ts) / [`audioPlayback.ts`](frontend/app/call/audioPlayback.ts) |
 
 ## Prerequisites
 
@@ -57,9 +70,15 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `backend/.env` at minimum: `PIPER_BINARY`, `PIPER_VOICE`, `OLLAMA_MODEL` (see comments in `[backend/.env.example](backend/.env.example)`). For GPU STT without system CUDA BLAS, see `[backend/requirements-whisper-gpu.txt](backend/requirements-whisper-gpu.txt)`.
+Edit `backend/.env` at minimum: `PIPER_BINARY`, `PIPER_VOICE`, `OLLAMA_MODEL` (see comments in [`backend/.env.example`](backend/.env.example)). For GPU STT without system CUDA BLAS, see [`backend/requirements-whisper-gpu.txt`](backend/requirements-whisper-gpu.txt).
 
-With venv **still active** and cwd `backend/`:
+To run the Python test suite you also need dev dependencies (pytest is not in the default `requirements.txt`):
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+From the same venv and `backend/` directory:
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -212,7 +231,9 @@ Dev-only: `ENABLE_DB_INSPECT=1` enables [`GET /internal/db/snapshot`](http://127
 
 ## Configuration reference
 
-Templates: `[backend/.env.example](backend/.env.example)`, `[frontend/.env.local.example](frontend/.env.local.example)`, repo root `[.env.example](.env.example)`.
+Templates: `[backend/.env.example](backend/.env.example)` (authoritative for the API and worker), `[frontend/.env.local.example](frontend/.env.local.example)` (browser `NEXT_PUBLIC_*` vars), and repo root `[.env.example](.env.example)` (monorepo checklist only — not loaded by the apps).
+
+`backend/.env.example` documents every variable the backend reads; optional or advanced keys appear commented. The frontend reads **only** `NEXT_PUBLIC_*` keys at build/start — see `frontend/.env.local.example` and grep `NEXT_PUBLIC_` under `frontend/` if you add new client flags.
 
 
 | Area             | Notes                                                                                                                                                       |
@@ -232,6 +253,7 @@ Optional vendor paths under `.tools/` are documented in `backend/.env.example`.
 ```bash
 source backend/.venv/bin/activate
 cd backend
+pip install -r requirements-dev.txt   # if not already installed
 python -m pytest tests/ -q
 bash scripts/qa_scenario_matrix.sh
 ```
@@ -254,10 +276,19 @@ bash scripts/e2e_integration_real.sh
 | `e2e_integration_real.sh`      | Strict stack smoke                                           |
 | `e2e_real_smoke.sh`            | Lenient smoke                                                |
 | `benchmark_api_performance.py` | Route timings                                                |
+| `benchmark_musetalk.py`        | MuseTalk latency sweep (GPU)                                 |
+| `simulate_lipsync_paths.py`    | Debug REST/WS/LiveKit lip-sync without the browser           |
+| `e2e_process_edge_cases.py`    | Exercise `POST /process` variants against a running API        |
+| `fix_musetalk_inference_image.py` | Patch upstream MuseTalk static-portrait bug               |
+| `setup_musetalk_weights.sh`    | Idempotent HF / gdown weight fetch                           |
+| `setup_ffmpeg_static.sh`       | Optional static FFmpeg for MuseTalk mux                      |
+| `test_lipsync_8001.sh`         | Quick curl checks against MuseTalk on :8001                  |
 | `qa_scenario_matrix.sh`        | Pytest subset + optional `RUN_HTTP=1`                        |
 
 
 ## API overview
+
+Route handlers live under [`backend/app/routers/`](backend/app/routers/) and are mounted from [`backend/app/main.py`](backend/app/main.py); public paths are unchanged.
 
 - **HTTP:** `POST /process`, `POST /conversation`, `POST /agent/summary`, `POST /tools/invoke`, `POST /stt`, `POST /tts`, `GET /livekit/token`, `GET /avatar/lipsync/status`, `POST /avatar/lipsync` (MuseTalk, optional), `POST /internal/voice/worker/transcript` (worker + `VOICE_INTERNAL_SECRET` only)
 - **WebSocket:** `/ws/agent`, `/ws/conversation_audio`
