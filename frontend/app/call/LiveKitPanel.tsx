@@ -1,6 +1,6 @@
 "use client";
 
-import { ParticipantKind, Room, RoomEvent, Track, TrackEvent } from "livekit-client";
+import { ParticipantEvent, ParticipantKind, Room, RoomEvent, Track, TrackEvent } from "livekit-client";
 import type {
   Participant,
   RemoteParticipant,
@@ -34,6 +34,8 @@ type Props = {
   onTranscriptExchange?: (user: string | null, assistant: string | null) => void;
   /** Worker→room data on topic ``va`` (tool results, conversation_ended). */
   onVoiceAgentData?: (msg: Record<string, unknown>) => void;
+  /** Remote assistant (non-browser) VAD: first ``true`` after ``tts_begin`` anchors lipsync like WebSocket ``playWav`` timing. */
+  onAssistantSpeakingStarted?: () => void;
 };
 
 export function sanitizeLiveKitRoomName(room: string, fallback: string): string {
@@ -81,6 +83,7 @@ export default function LiveKitPanel({
   onMicPublished,
   onTranscriptExchange,
   onVoiceAgentData,
+  onAssistantSpeakingStarted,
 }: Props) {
   const livekitUrl = (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "").trim().replace(/\/$/, "");
   const roomRef = useRef<Room | null>(null);
@@ -100,6 +103,11 @@ export default function LiveKitPanel({
   useEffect(() => {
     onVoiceAgentDataRef.current = onVoiceAgentData;
   }, [onVoiceAgentData]);
+
+  const onAssistantSpeakingStartedRef = useRef(onAssistantSpeakingStarted);
+  useEffect(() => {
+    onAssistantSpeakingStartedRef.current = onAssistantSpeakingStarted;
+  }, [onAssistantSpeakingStarted]);
 
   const transcriptionDedupeRef = useRef(new Set<string>());
   const transcriptionListenerRef = useRef<
@@ -278,6 +286,21 @@ export default function LiveKitPanel({
 
         transcriptionDedupeRef.current.clear();
         const browserIdentity = r.localParticipant.identity;
+        const wiredSpeaking = new Set<string>();
+        const wireAssistantSpeakingIfNeeded = (p: Participant): void => {
+          if (p === r.localParticipant) return;
+          const rp = p as RemoteParticipant;
+          const psid = rp.sid;
+          if (!psid || wiredSpeaking.has(psid)) return;
+          wiredSpeaking.add(psid);
+          rp.on(ParticipantEvent.IsSpeakingChanged, (speaking: boolean) => {
+            if (!mountedRef.current || !speaking) return;
+            onAssistantSpeakingStartedRef.current?.();
+          });
+        };
+        for (const p of r.remoteParticipants.values()) {
+          wireAssistantSpeakingIfNeeded(p);
+        }
         const onRoomTranscription = (
           segments: TranscriptionSegment[],
           participant?: Participant,
@@ -306,7 +329,11 @@ export default function LiveKitPanel({
           topic: string | undefined,
         ): void => {
           if (String(topic ?? "") !== "va") return;
-          if (!participant || !mountedRef.current) return;
+          if (!mountedRef.current) return;
+          // Worker `publish_data` can rarely race before RemoteParticipant is in the map — still apply payloads.
+          if (liveKitDiagEnabled() && !participant) {
+            diagLog("Room.DataReceived va (no participant yet)", { topic });
+          }
           const relay = onVoiceAgentDataRef.current;
           if (!relay) return;
           try {
@@ -492,11 +519,13 @@ export default function LiveKitPanel({
 
         /** Prefer event payload — `remoteParticipants` can lag ParticipantConnected briefly. */
         function onParticipantJoined(p: Participant): void {
+          wireAssistantSpeakingIfNeeded(p);
           const hint = agentPresentHint(p);
           if (hint) signalReady(hint);
         }
 
         function onParticipantActive(p: Participant): void {
+          wireAssistantSpeakingIfNeeded(p);
           const hint = agentPresentHint(p);
           if (hint) signalReady(hint);
         }
@@ -519,6 +548,7 @@ export default function LiveKitPanel({
             publicationMutedMetadata: pub?.isMuted ?? null,
           });
           attachRemoteAssistantAudio(track);
+          wireAssistantSpeakingIfNeeded(p);
           const hint = agentPresentHint(p);
           if (hint) signalReady(`${hint} [audio subscribed]`);
         }

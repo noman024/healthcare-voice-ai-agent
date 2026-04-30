@@ -14,15 +14,17 @@ import logging
 import os
 import sys
 import uuid
+from collections.abc import AsyncGenerator, AsyncIterable
 from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit.agents import AgentSession, JobContext, WorkerOptions, cli, function_tool, stt
 from livekit.agents.job import AutoSubscribe
 from livekit.agents.llm import ChatMessage
-from livekit.agents.voice import Agent
+from livekit.agents.voice import Agent, ModelSettings
 from livekit.agents.voice.events import (
     ConversationItemAddedEvent,
     FunctionToolsExecutedEvent,
@@ -53,6 +55,39 @@ from .tts_fastapi import FastApiPiperTTS
 from .userdata import HealthcareUserdata
 
 logger = logging.getLogger(__name__)
+
+
+class HealthcareVoiceAgent(Agent):
+    """One Piper (+ MuseTalk) job per assistant reply, not per sentence.
+
+    LiveKit's default ``Agent.tts_node`` wraps non-streaming TTS with ``tts.StreamAdapter`` and
+    BlingFire sentence tokenization, issuing ``synthesize()`` for each sentence as the LLM streams.
+    That chunks room audio and avatar video sentence-by-sentence. We buffer the streamed text to
+    match the WebSocket path (single WAV per turn).
+    """
+
+    async def tts_node(
+        self,
+        text: AsyncIterable[str],
+        _model_settings: ModelSettings,
+    ) -> AsyncGenerator[rtc.AudioFrame, None]:
+        activity = self._get_activity_or_raise()
+        if activity.tts is None:
+            raise RuntimeError(
+                "`tts_node` called but no TTS is configured. Disable audio with "
+                "`session.output.set_audio_enabled(False)` if intentional."
+            )
+        parts: list[str] = []
+        async for chunk in text:
+            parts.append(chunk)
+        full = "".join(parts).strip()
+        if not full:
+            return
+        conn_options = self.session.conn_options.tts_conn_options
+        async with activity.tts.synthesize(full, conn_options=conn_options) as stream:
+            async for ev in stream:
+                yield ev.frame
+
 
 _BACKEND = Path(__file__).resolve().parent.parent.parent
 if str(_BACKEND) not in sys.path:
@@ -126,6 +161,28 @@ def _worker_lipsync_enabled() -> bool:
     """POST Piper WAV to ``/avatar/lipsync`` from the worker as soon as TTS returns (before browser reassembles chunks)."""
     v = os.getenv("VOICE_WORKER_LIPSYNC", "1").strip().lower()
     return v in ("1", "true", "yes", "on")
+
+
+def _lipsync_before_room_audio() -> bool:
+    """When True (default if worker lipsync on), await full MP4 publish before emitting room PCM so browser+room align like WebSocket+attachAudio."""
+    if not _worker_lipsync_enabled():
+        return False
+    v = os.getenv("VOICE_LIPSYNC_BEFORE_ROOM_AUDIO", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _livekit_tts_segmented() -> bool:
+    """
+    Sentence-scale TTS lowers time-to-first-room-audio but runs Piper + MuseTalk once per chunk, which
+    gaps both streamed audio and the avatar MP4. When ``VOICE_WORKER_LIPSYNC`` is on (default), we default
+    to **one** Piper + MuseTalk pass per assistant utterance unless ``VOICE_TTS_SEGMENTED`` is set explicitly.
+    """
+    raw = (os.getenv("VOICE_TTS_SEGMENTED") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return not _worker_lipsync_enabled()
 
 
 async def _publish_lipsync_mp4_from_wav(
@@ -243,8 +300,54 @@ async def _publish_tts_wav_chunks(
     if worker_lip:
         begin["worker_lipsync"] = True
     await _publish_ui_payload(room, dest_identity, begin)
-    asyncio.create_task(_publish_tts_wav_body(room, dest_identity, wav, rid))
+    gate = _lipsync_before_room_audio()
+    if worker_lip and gate:
+        await _publish_lipsync_mp4_from_wav(room, dest_identity, wav, rid, api_base)
+    if gate:
+        await _publish_tts_wav_body(room, dest_identity, wav, rid)
+    else:
+        asyncio.create_task(_publish_tts_wav_body(room, dest_identity, wav, rid))
+    if worker_lip and not gate:
+        asyncio.create_task(_publish_lipsync_mp4_from_wav(room, dest_identity, wav, rid, api_base))
+
+
+async def _publish_tts_segment_chunks(
+    room: Any,
+    dest_identity: str,
+    wav: bytes,
+    api_base: str,
+    *,
+    utterance_id: str,
+    segment_index: int,
+    segment_count: int,
+    audio_offset_ms: float,
+) -> None:
+    """
+    One Piper+MuseTalk segment: UI aligns MP4 to room audio via ``audio_offset_ms`` from utterance start.
+    """
+    if not room or not dest_identity or not wav:
+        return
+    rid = f"{utterance_id}_{segment_index}"[:128]
+    worker_lip = _worker_lipsync_enabled()
+    begin: dict[str, Any] = {
+        "kind": "tts_begin",
+        "utterance_id": utterance_id,
+        "segment_index": segment_index,
+        "segment_count": segment_count,
+        "audio_offset_ms": round(float(audio_offset_ms), 2),
+        "rid": rid,
+    }
     if worker_lip:
+        begin["worker_lipsync"] = True
+    await _publish_ui_payload(room, dest_identity, begin)
+    gate = _lipsync_before_room_audio()
+    if worker_lip and gate:
+        await _publish_lipsync_mp4_from_wav(room, dest_identity, wav, rid, api_base)
+    if gate:
+        await _publish_tts_wav_body(room, dest_identity, wav, rid)
+    else:
+        asyncio.create_task(_publish_tts_wav_body(room, dest_identity, wav, rid))
+    if worker_lip and not gate:
         asyncio.create_task(_publish_lipsync_mp4_from_wav(room, dest_identity, wav, rid, api_base))
 
 
@@ -475,14 +578,35 @@ async def entrypoint(ctx: JobContext) -> None:
     async def _forward_wav_to_ui(wav: bytes) -> None:
         await _publish_tts_wav_chunks(ctx.room, identity, wav, api_base)
 
+    async def _forward_segment_to_ui(
+        wav: bytes,
+        segment_index: int,
+        segment_count: int,
+        audio_offset_ms: float,
+        utterance_id: str,
+    ) -> None:
+        await _publish_tts_segment_chunks(
+            ctx.room,
+            identity,
+            wav,
+            api_base,
+            utterance_id=utterance_id,
+            segment_index=segment_index,
+            segment_count=segment_count,
+            audio_offset_ms=audio_offset_ms,
+        )
+
+    seg_effective = _livekit_tts_segmented()
     tts_engine = FastApiPiperTTS(
         base_url=api_base,
         publish_sample_rate=publish_sr,
-        on_original_wav=_forward_wav_to_ui,
+        on_original_wav=_forward_wav_to_ui if not seg_effective else None,
+        on_segment_wav=_forward_segment_to_ui if seg_effective else None,
+        segmented=seg_effective,
     )
 
     instructions = _voice_system_instructions() + "\n---\nResponse tone:\n" + FINALIZE_SYSTEM
-    agent = Agent(instructions=instructions, tools=_HEALTH_TOOLS)
+    agent = HealthcareVoiceAgent(instructions=instructions, tools=_HEALTH_TOOLS)
 
     session = AgentSession(
         stt=pipeline_stt,

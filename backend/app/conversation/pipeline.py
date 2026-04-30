@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import time
 import sqlite3
 from collections.abc import Iterator
@@ -204,6 +205,9 @@ def iter_chunked_audio_turn_events(
         }
         return
 
+    t_agent0 = time.perf_counter()
+    _ws_timing = os.getenv("VOICE_WS_PIPELINE_TIMING", "").strip().lower() in ("1", "true", "yes", "on")
+
     for ev in iter_turn_events(
         conn,
         user_message=text,
@@ -215,7 +219,16 @@ def iter_chunked_audio_turn_events(
             yield ev
             continue
         payload = {k: v for k, v in ev.items() if k != "type"}
+        t_before_tts = time.perf_counter()
         audio_b64, _ = maybe_tts_base64(str(payload.get("final_response") or ""), want_audio=return_speech)
+        if _ws_timing:
+            logger.info(
+                "ws_voice_timing session=%s stt_ms=%s agent_llm_tool_ms=%s piper_tts_ms=%s",
+                session_id,
+                stt_elapsed_ms,
+                int((t_before_tts - t_agent0) * 1000.0),
+                int((time.perf_counter() - t_before_tts) * 1000.0),
+            )
         payload["audio_wav_base64"] = audio_b64
         payload["tts_configured"] = is_tts_configured()
         payload["transcript"] = text

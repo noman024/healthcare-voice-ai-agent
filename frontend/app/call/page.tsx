@@ -48,6 +48,38 @@ function mergeTtsWavChunks(parts: Map<number, string>): Uint8Array {
   return out;
 }
 
+/** Accept JSON where numeric fields may arrive as strings after relay/parse. */
+function coerceVaSeq(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return -1;
+}
+
+function coerceVaLast(v: unknown): boolean {
+  return v === true || v === "true" || v === 1 || v === "1";
+}
+
+function coerceOffsetMs(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+function coerceNonNegInt(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return Math.floor(v);
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  return null;
+}
+
 function summarizeTool(tool: unknown): string {
   const t = typeof tool === "string" ? tool : "";
   const labels: Record<string, string> = {
@@ -118,6 +150,10 @@ const VAD_LOUD_TICKS_TO_START = 2;
 const VAD_QUIET_TICKS_TO_END = 16;
 const VAD_MIN_UTTERANCE_MS = 450;
 const VAD_BARGE_IN_LOUD_TICKS = 3;
+/** After TTS starts, ignore barge-in this long (ms) so speaker→mic bleed does not cancel playback. */
+const TTS_BARGE_IN_GRACE_MS = 1_400;
+/** Stricter RMS multiplier for barge vs VAD (echo is often below true user interrupt). */
+const VAD_BARGE_RMS_MULT = 3.25;
 
 function pcmRmsTimeDomain(analyser: AnalyserNode): number {
   const buf = new Uint8Array(analyser.fftSize);
@@ -290,7 +326,12 @@ export default function CallPage() {
   );
 
   const [chatMode, setChatMode] = useState<"text" | "voice">("text");
-  const [voiceBackend, setVoiceBackend] = useState<"livekit" | "websocket" | null>(null);
+  /** User picks in Voice mode; initial default after `/livekit/status` respects ``NEXT_PUBLIC_PREFER_LIVEKIT_VOICE``. */
+  const [voiceBackend, setVoiceBackend] = useState<"livekit" | "websocket">("websocket");
+  /** ``null`` until first `/livekit/status` in this voice session. */
+  const [liveKitStatusOk, setLiveKitStatusOk] = useState<boolean | null>(null);
+  const userVoiceBackendPinnedRef = useRef(false);
+  const prevChatModeRef = useRef<"text" | "voice">("text");
   const [liveKitSurfaceOn, setLiveKitSurfaceOn] = useState(false);
   /** True once LiveKit publishes the mic track; worker can hear you before assistant events settle. */
   const [liveKitMicLive, setLiveKitMicLive] = useState(false);
@@ -318,6 +359,9 @@ export default function CallPage() {
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
   const handsFreeStreamRef = useRef<MediaStream | null>(null);
   const ttsLifecycleRef = useRef<{ stop: () => void } | null>(null);
+  /** ``performance.now()`` ceiling: no TTS barge-in until after this (WebSocket voice echo guard). */
+  const ttsBargeInGraceUntilRef = useRef(0);
+  /** Invalidate late MuseTalk completions when a new ``attachAudio`` run starts. */
   const busyRef = useRef(false);
   const speakingRef = useRef(false);
   const lastPhoneRef = useRef<string | null>(null);
@@ -331,15 +375,25 @@ export default function CallPage() {
   const lipsyncMp4AssemblyRef = useRef<{ rid: string; parts: Map<number, string> } | null>(null);
   /** performance.now() at ``tts_begin`` (or first chunk) keyed by utterance ``rid`` — avoids races back-to-back. */
   const liveKitTtsAnchorByRidRef = useRef<Map<string, number>>(new Map());
-  /** Utterance generation at ``tts_begin`` (or first chunk) for stale MP4 / fetch drop. */
-  const liveKitTtsGenByRidRef = useRef<Map<string, number>>(new Map());
+  /** Monotonic ordinal per assistant utterance; equals the most recent ``rid``'s value after each ``tts_begin``. */
+  const liveKitUtteranceHeadOrdinalRef = useRef(0);
+  /** Maps each ``rid`` to the ordinal when that utterance started (staleness = older ordinal than head). */
+  const liveKitRidToOrdinalRef = useRef<Map<string, number>>(new Map());
   /** Worker POSTs ``/avatar/lipsync``; browser should not duplicate; WAV kept for fallback on error. */
   const liveKitWorkerLipsyncByRidRef = useRef<Map<string, boolean>>(new Map());
   const liveKitFallbackWavByRidRef = useRef<Map<string, Uint8Array>>(new Map());
   /** True once worker MP4 for this ``rid`` was applied (last WAV may arrive later). */
   const liveKitWorkerLipsyncAppliedRef = useRef<Set<string>>(new Set());
-  /** Latest LiveKit lipsync request wins if MuseTalk responses overlap. */
-  const liveKitMusetalkGenRef = useRef(0);
+  /** Most recent assistant utterance id from `tts_begin` (or first WAV chunk). */
+  const liveKitLatestTtsRidRef = useRef<string | null>(null);
+  /** Segmented TTS: worker ``utterance_id`` for timeline sync. */
+  const liveKitCurrentUtteranceIdRef = useRef<string | null>(null);
+  /** ``performance.now()`` when the current utterance's TTS is first audible in the room (LiveKit assistant VAD); null until then. */
+  const liveKitUtteranceAnchorPerfRef = useRef<number | null>(null);
+  /** Per-segment audio offset (ms) from utterance start → maps ``rid`` from ``tts_begin``. */
+  const liveKitTtsAudioOffsetMsByRidRef = useRef<Map<string, number>>(new Map());
+  /** Segmented TTS: segment_index / segment_count for ``rid`` (suppress video `ended` between chunks). */
+  const liveKitTtsSegmentByRidRef = useRef<Map<string, { index: number; count: number }>>(new Map());
   const [recording, setRecording] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -452,53 +506,110 @@ export default function CallPage() {
   }, [baseUrl, sessionId, conversationId, transcript]);
 
   const applyLiveKitMusetalkVideoBlob = useCallback(
-    (blob: Blob, ttsAnchorPerfMs: number, utteranceGen: number) => {
-      if (utteranceGen !== liveKitMusetalkGenRef.current) return;
+    (blob: Blob, _ttsAnchorPerfMs: number, utteranceRid: string, utteranceOrdinal: number) => {
+      if (!utteranceRid) return;
+      if (utteranceOrdinal !== liveKitUtteranceHeadOrdinalRef.current) return;
       const musetalkOn = (process.env.NEXT_PUBLIC_MUSETALK_ENABLED ?? "").trim() === "1";
-      if (!returnSpeech || !musetalkOn) {
+      if (!musetalkOn) {
         setSpeaking(false);
         speakingRef.current = false;
+        return;
+      }
+      if (blob.size < 32) {
         return;
       }
       revokeLipsyncUrl();
       const url = URL.createObjectURL(blob);
       lipsyncBlobUrlRef.current = url;
-      setLipsyncSuppressVideoEnd(false);
-      setLipsyncSyncStartPerfMs(ttsAnchorPerfMs);
+      const seg = liveKitTtsSegmentByRidRef.current.get(utteranceRid);
+      liveKitTtsSegmentByRidRef.current.delete(utteranceRid);
+      const suppressEnded = seg != null && seg.count > 1 && seg.index < seg.count - 1;
+      setLipsyncSuppressVideoEnd(suppressEnded);
+      const offMs = liveKitTtsAudioOffsetMsByRidRef.current.get(utteranceRid) ?? 0;
+      const base = liveKitUtteranceAnchorPerfRef.current;
+      const useUtteranceTimeline =
+        liveKitCurrentUtteranceIdRef.current != null &&
+        liveKitTtsAudioOffsetMsByRidRef.current.has(utteranceRid) &&
+        base != null;
+      const syncAt = useUtteranceTimeline ? base + offMs : performance.now();
+      setLipsyncSyncStartPerfMs(syncAt);
       setLipsyncVideoUrl(url);
       setSpeaking(true);
       speakingRef.current = true;
     },
-    [returnSpeech, revokeLipsyncUrl],
+    [revokeLipsyncUrl],
   );
 
+  const onLiveKitAssistantSpeakingStarted = useCallback(() => {
+    if (chatMode !== "voice" || voiceBackend !== "livekit") return;
+    const ts = performance.now();
+    const anchorWasNull = liveKitUtteranceAnchorPerfRef.current == null;
+    if (anchorWasNull) {
+      liveKitUtteranceAnchorPerfRef.current = ts;
+    }
+    const rid = liveKitLatestTtsRidRef.current;
+    if (!rid) return;
+    const ord = liveKitRidToOrdinalRef.current.get(rid) ?? -1;
+    if (ord < 0 || ord !== liveKitUtteranceHeadOrdinalRef.current) return;
+    const off = liveKitTtsAudioOffsetMsByRidRef.current.get(rid) ?? 0;
+    const base = liveKitUtteranceAnchorPerfRef.current;
+    if (liveKitCurrentUtteranceIdRef.current != null) {
+      if (base != null && anchorWasNull) setLipsyncSyncStartPerfMs(base + off);
+    } else if (anchorWasNull) {
+      setLipsyncSyncStartPerfMs(ts);
+    }
+  }, [chatMode, voiceBackend]);
+
   const runLiveKitMusetalkFromWavBytes = useCallback(
-    async (wavBytes: Uint8Array, ttsAnchorPerfMs: number, utteranceGen: number) => {
+    async (
+      wavBytes: Uint8Array,
+      ttsAnchorPerfMs: number,
+      utteranceRid: string,
+      ordinalSnap?: number,
+    ) => {
       const musetalkOn = (process.env.NEXT_PUBLIC_MUSETALK_ENABLED ?? "").trim() === "1";
-      if (!returnSpeech || !musetalkOn) {
+      if (!musetalkOn) {
         setSpeaking(false);
         speakingRef.current = false;
         return;
       }
+      const ordAtFetch =
+        ordinalSnap !== undefined && ordinalSnap >= 0
+          ? ordinalSnap
+          : (liveKitRidToOrdinalRef.current.get(utteranceRid) ?? -1);
+      const finish = (): void => {
+        liveKitRidToOrdinalRef.current.delete(utteranceRid);
+        liveKitTtsAudioOffsetMsByRidRef.current.delete(utteranceRid);
+        liveKitTtsSegmentByRidRef.current.delete(utteranceRid);
+      };
       try {
         const fd = new FormData();
         fd.append("audio", new Blob([wavBytes.slice()], { type: "audio/wav" }), "tts.wav");
         const lr = await fetch(`${musetalkApiBase}/avatar/lipsync`, { method: "POST", body: fd });
-        if (utteranceGen !== liveKitMusetalkGenRef.current) return;
+        if (ordAtFetch < 0 || ordAtFetch !== liveKitUtteranceHeadOrdinalRef.current) {
+          finish();
+          return;
+        }
         if (lr.ok) {
           const blob = await lr.blob();
-          if (utteranceGen !== liveKitMusetalkGenRef.current) return;
-          applyLiveKitMusetalkVideoBlob(blob, ttsAnchorPerfMs, utteranceGen);
+          if (ordAtFetch !== liveKitUtteranceHeadOrdinalRef.current) {
+            finish();
+            return;
+          }
+          applyLiveKitMusetalkVideoBlob(blob, ttsAnchorPerfMs, utteranceRid, ordAtFetch);
+          finish();
         } else {
+          finish();
           setSpeaking(false);
           speakingRef.current = false;
         }
       } catch {
+        finish();
         setSpeaking(false);
         speakingRef.current = false;
       }
     },
-    [returnSpeech, musetalkApiBase, applyLiveKitMusetalkVideoBlob],
+    [musetalkApiBase, applyLiveKitMusetalkVideoBlob],
   );
 
   const onLiveKitVoiceAgentData = useCallback(
@@ -507,11 +618,31 @@ export default function CallPage() {
       if (kind === "tts_begin") {
         const rid = typeof msg.rid === "string" ? msg.rid : "";
         if (!rid) return;
-        liveKitMusetalkGenRef.current += 1;
-        const gen = liveKitMusetalkGenRef.current;
-        liveKitTtsGenByRidRef.current.set(rid, gen);
+        const utteranceId = typeof msg.utterance_id === "string" ? msg.utterance_id.trim() : "";
+        if (utteranceId) {
+          if (utteranceId !== liveKitCurrentUtteranceIdRef.current) {
+            liveKitCurrentUtteranceIdRef.current = utteranceId;
+            liveKitUtteranceHeadOrdinalRef.current += 1;
+            liveKitUtteranceAnchorPerfRef.current = null;
+          }
+        } else {
+          liveKitCurrentUtteranceIdRef.current = null;
+          liveKitUtteranceHeadOrdinalRef.current += 1;
+          liveKitUtteranceAnchorPerfRef.current = null;
+        }
+        const ord = liveKitUtteranceHeadOrdinalRef.current;
+        liveKitLatestTtsRidRef.current = rid;
+        liveKitRidToOrdinalRef.current.set(rid, ord);
+        liveKitTtsAudioOffsetMsByRidRef.current.set(rid, coerceOffsetMs(msg.audio_offset_ms));
+        const segIdx = coerceNonNegInt(msg.segment_index);
+        const segCnt = coerceNonNegInt(msg.segment_count);
+        if (segIdx != null && segCnt != null && segCnt > 1) {
+          liveKitTtsSegmentByRidRef.current.set(rid, { index: segIdx, count: segCnt });
+        } else {
+          liveKitTtsSegmentByRidRef.current.delete(rid);
+        }
         liveKitTtsAnchorByRidRef.current.set(rid, performance.now());
-        if (msg.worker_lipsync === true) {
+        if (msg.worker_lipsync === true || msg.worker_lipsync === 1 || msg.worker_lipsync === "true") {
           liveKitWorkerLipsyncByRidRef.current.set(rid, true);
         }
         return;
@@ -524,18 +655,23 @@ export default function CallPage() {
         liveKitWorkerLipsyncAppliedRef.current.delete(rid);
         const bytes = liveKitFallbackWavByRidRef.current.get(rid);
         liveKitFallbackWavByRidRef.current.delete(rid);
-        if (!bytes) return;
+        if (!bytes) {
+          liveKitTtsAnchorByRidRef.current.delete(rid);
+          liveKitRidToOrdinalRef.current.delete(rid);
+          liveKitTtsAudioOffsetMsByRidRef.current.delete(rid);
+          liveKitTtsSegmentByRidRef.current.delete(rid);
+          return;
+        }
         const anchor = liveKitTtsAnchorByRidRef.current.get(rid) ?? performance.now();
-        const gen = liveKitTtsGenByRidRef.current.get(rid) ?? liveKitMusetalkGenRef.current;
         liveKitTtsAnchorByRidRef.current.delete(rid);
-        liveKitTtsGenByRidRef.current.delete(rid);
-        void runLiveKitMusetalkFromWavBytes(bytes, anchor, gen);
+        const ordSnap = liveKitRidToOrdinalRef.current.get(rid) ?? -1;
+        void runLiveKitMusetalkFromWavBytes(bytes, anchor, rid, ordSnap);
         return;
       }
       if (kind === "lipsync_mp4_chunk") {
         const rid = typeof msg.rid === "string" ? msg.rid : "";
-        const seq = typeof msg.seq === "number" ? msg.seq : -1;
-        const last = msg.last === true;
+        const seq = coerceVaSeq(msg.seq);
+        const last = coerceVaLast(msg.last);
         const b64 = typeof msg.b64 === "string" ? msg.b64 : "";
         if (!rid || seq < 0 || !b64) return;
         let acc = lipsyncMp4AssemblyRef.current;
@@ -547,15 +683,24 @@ export default function CallPage() {
         if (last) {
           lipsyncMp4AssemblyRef.current = null;
           const anchor = liveKitTtsAnchorByRidRef.current.get(rid) ?? performance.now();
-          const gen = liveKitTtsGenByRidRef.current.get(rid);
           const hadFallback = liveKitFallbackWavByRidRef.current.has(rid);
-          liveKitTtsAnchorByRidRef.current.delete(rid);
-          liveKitTtsGenByRidRef.current.delete(rid);
-          liveKitFallbackWavByRidRef.current.delete(rid);
-          if (gen == null || gen !== liveKitMusetalkGenRef.current) return;
+          const ordForRid = liveKitRidToOrdinalRef.current.get(rid);
+          if (ordForRid == null || ordForRid !== liveKitUtteranceHeadOrdinalRef.current) {
+            liveKitTtsAnchorByRidRef.current.delete(rid);
+            liveKitRidToOrdinalRef.current.delete(rid);
+            liveKitFallbackWavByRidRef.current.delete(rid);
+            liveKitTtsAudioOffsetMsByRidRef.current.delete(rid);
+            liveKitTtsSegmentByRidRef.current.delete(rid);
+            return;
+          }
           const mp4Bytes = mergeTtsWavChunks(acc.parts);
           const blob = new Blob([Uint8Array.from(mp4Bytes)], { type: "video/mp4" });
-          applyLiveKitMusetalkVideoBlob(blob, anchor, gen);
+          applyLiveKitMusetalkVideoBlob(blob, anchor, rid, ordForRid);
+          liveKitTtsAnchorByRidRef.current.delete(rid);
+          liveKitRidToOrdinalRef.current.delete(rid);
+          liveKitFallbackWavByRidRef.current.delete(rid);
+          liveKitTtsAudioOffsetMsByRidRef.current.delete(rid);
+          liveKitTtsSegmentByRidRef.current.delete(rid);
           if (hadFallback) {
             liveKitWorkerLipsyncByRidRef.current.delete(rid);
           } else {
@@ -566,19 +711,20 @@ export default function CallPage() {
       }
       if (kind === "tts_wav_chunk") {
         const rid = typeof msg.rid === "string" ? msg.rid : "";
-        const seq = typeof msg.seq === "number" ? msg.seq : -1;
-        const last = msg.last === true;
+        const seq = coerceVaSeq(msg.seq);
+        const last = coerceVaLast(msg.last);
         const b64 = typeof msg.b64 === "string" ? msg.b64 : "";
         if (!rid || seq < 0 || !b64) return;
         let acc = ttsWavAssemblyRef.current;
         if (!acc || acc.rid !== rid) {
           acc = { rid, parts: new Map<number, string>() };
+          liveKitLatestTtsRidRef.current = rid;
           if (!liveKitTtsAnchorByRidRef.current.has(rid)) {
             liveKitTtsAnchorByRidRef.current.set(rid, performance.now());
           }
-          if (!liveKitTtsGenByRidRef.current.has(rid)) {
-            liveKitMusetalkGenRef.current += 1;
-            liveKitTtsGenByRidRef.current.set(rid, liveKitMusetalkGenRef.current);
+          if (!liveKitRidToOrdinalRef.current.has(rid)) {
+            liveKitUtteranceHeadOrdinalRef.current += 1;
+            liveKitRidToOrdinalRef.current.set(rid, liveKitUtteranceHeadOrdinalRef.current);
           }
           if ((process.env.NEXT_PUBLIC_MUSETALK_ENABLED ?? "").trim() === "1") {
             setSpeaking(true);
@@ -592,33 +738,39 @@ export default function CallPage() {
           const bytes = mergeTtsWavChunks(acc.parts);
           const workerLipsync = liveKitWorkerLipsyncByRidRef.current.get(rid) === true;
           const anchor = liveKitTtsAnchorByRidRef.current.get(rid) ?? performance.now();
-          const gen = liveKitTtsGenByRidRef.current.get(rid) ?? liveKitMusetalkGenRef.current;
+          const ordSnap = liveKitRidToOrdinalRef.current.get(rid) ?? -1;
           if (workerLipsync) {
             if (liveKitWorkerLipsyncAppliedRef.current.has(rid)) {
               liveKitWorkerLipsyncAppliedRef.current.delete(rid);
               liveKitWorkerLipsyncByRidRef.current.delete(rid);
               liveKitFallbackWavByRidRef.current.delete(rid);
+              liveKitTtsAnchorByRidRef.current.delete(rid);
+              liveKitRidToOrdinalRef.current.delete(rid);
+              liveKitTtsAudioOffsetMsByRidRef.current.delete(rid);
+              liveKitTtsSegmentByRidRef.current.delete(rid);
               return;
             }
             liveKitFallbackWavByRidRef.current.set(rid, bytes);
             return;
           }
           liveKitTtsAnchorByRidRef.current.delete(rid);
-          liveKitTtsGenByRidRef.current.delete(rid);
           liveKitWorkerLipsyncByRidRef.current.delete(rid);
           liveKitFallbackWavByRidRef.current.delete(rid);
-          void runLiveKitMusetalkFromWavBytes(bytes, anchor, gen);
+          void runLiveKitMusetalkFromWavBytes(bytes, anchor, rid, ordSnap);
         }
         return;
       }
       if (kind === "tool" && msg.tool_execution && typeof msg.tool_execution === "object") {
-        setResult((prev) =>
-          ({
-            ...(typeof prev === "object" && prev !== null ? prev : {}),
-            plan: {},
-            tool_execution: msg.tool_execution as Record<string, unknown>,
-          }) as AgentPayload,
-        );
+        const te = msg.tool_execution as Record<string, unknown>;
+        setResult((prev) => {
+          const base = typeof prev === "object" && prev !== null ? prev : {};
+          const next = { ...base, tool_execution: te } as AgentPayload;
+          queueMicrotask(() => {
+            setStatusLine(buildActivityFeed(next).slice(-4));
+          });
+          return next;
+        });
+        return;
       }
       if (kind === "conversation_ended") void fetchSummary();
     },
@@ -658,6 +810,26 @@ export default function CallPage() {
       if (!returnSpeech || !b64 || !ok) return;
 
       const musetalkOn = (process.env.NEXT_PUBLIC_MUSETALK_ENABLED ?? "").trim() === "1";
+
+      const playWithSyncClock = async (): Promise<void> => {
+        try {
+          if (musetalkOn) setLipsyncSuppressVideoEnd(true);
+          setSpeaking(true);
+          speakingRef.current = true;
+          const t0 = performance.now();
+          ttsBargeInGraceUntilRef.current = t0 + TTS_BARGE_IN_GRACE_MS;
+          setLipsyncSyncStartPerfMs(t0);
+          await playWavBase64(b64, playbackAnalyserRef, ttsLifecycleRef);
+        } catch {
+          /* ignore */
+        } finally {
+          setLipsyncSuppressVideoEnd(false);
+          revokeLipsyncUrl();
+          setSpeaking(false);
+          speakingRef.current = false;
+        }
+      };
+
       if (musetalkOn) {
         try {
           const bin = atob(b64);
@@ -667,44 +839,24 @@ export default function CallPage() {
           fd.append("audio", new Blob([bytes], { type: "audio/wav" }), "tts.wav");
           const lr = await fetch(`${musetalkApiBase}/avatar/lipsync`, { method: "POST", body: fd });
           if (lr.ok) {
-            revokeLipsyncUrl();
             const blob = await lr.blob();
-            const url = URL.createObjectURL(blob);
-            lipsyncBlobUrlRef.current = url;
-            setLipsyncSuppressVideoEnd(true);
-            setLipsyncVideoUrl(url);
-            setSpeaking(true);
-            speakingRef.current = true;
-            try {
-              setLipsyncSyncStartPerfMs(performance.now());
-              await playWavBase64(b64, playbackAnalyserRef, ttsLifecycleRef);
-            } catch {
-              /* ignore */
-            } finally {
-              setLipsyncSuppressVideoEnd(false);
+            if (blob.size >= 32) {
               revokeLipsyncUrl();
-              setSpeaking(false);
-              speakingRef.current = false;
+              const url = URL.createObjectURL(blob);
+              lipsyncBlobUrlRef.current = url;
+              setLipsyncVideoUrl(url);
+              await playWithSyncClock();
+              return;
             }
-            return;
           }
         } catch {
-          /* fall through to WAV */
+          /* fall through to audio-only */
         }
         revokeLipsyncUrl();
         setLipsyncSuppressVideoEnd(false);
       }
 
-      try {
-        setSpeaking(true);
-        speakingRef.current = true;
-        await playWavBase64(b64, playbackAnalyserRef, ttsLifecycleRef);
-      } catch {
-        /* ignore */
-      } finally {
-        setSpeaking(false);
-        speakingRef.current = false;
-      }
+      await playWithSyncClock();
     },
     [returnSpeech, musetalkApiBase, revokeLipsyncUrl, playbackAnalyserRef, ttsLifecycleRef],
   );
@@ -811,20 +963,56 @@ export default function CallPage() {
             resolve();
           };
           ws.onopen = () => {
-            ws.send(
-              JSON.stringify({
-                action: "start",
-                session_id: sid,
-                conversation_id: conversationId,
-                language: null,
-                return_speech: returnSpeech,
-                file_extension: dotExt,
-              }),
+            try {
+              ws.send(
+                JSON.stringify({
+                  action: "start",
+                  session_id: sid,
+                  conversation_id: conversationId,
+                  language: null,
+                  return_speech: returnSpeech,
+                  file_extension: dotExt,
+                }),
+              );
+            } catch {
+              setError("WebSocket: could not send start frame.");
+              setBusy(false);
+              try {
+                ws.close();
+              } catch {
+                /* ignore */
+              }
+              resolve();
+              return;
+            }
+            void blob.arrayBuffer().then(
+              (ab) => {
+                if (ws.readyState !== WebSocket.OPEN) {
+                  setError("WebSocket closed before audio could be sent — check NEXT_PUBLIC_API_URL matches the running API.");
+                  setBusy(false);
+                  resolve();
+                  return;
+                }
+                try {
+                  ws.send(ab);
+                  ws.send(JSON.stringify({ action: "finalize" }));
+                } catch {
+                  setError("WebSocket: send failed (connection dropped).");
+                  setBusy(false);
+                  resolve();
+                }
+              },
+              () => {
+                setError("Could not read recorded audio for upload.");
+                setBusy(false);
+                try {
+                  ws.close();
+                } catch {
+                  /* ignore */
+                }
+                resolve();
+              },
             );
-            void blob.arrayBuffer().then((ab) => {
-              ws.send(ab);
-              ws.send(JSON.stringify({ action: "finalize" }));
-            });
           };
           ws.onmessage = (ev: MessageEvent) => {
             let payload: AgentPayload;
@@ -887,8 +1075,17 @@ export default function CallPage() {
               resolve();
             }
           };
-          ws.onclose = () => {
+          ws.onclose = (ev) => {
             if (!finalized) {
+              if (process.env.NODE_ENV === "development") {
+                console.warn("[call] /ws/conversation_audio closed before done", ev.code, ev.reason);
+              }
+              setError((prev) =>
+                prev ??
+                (ev.code === 1000
+                  ? "Voice WebSocket closed before the assistant reply finished. Confirm NEXT_PUBLIC_API_URL matches your uvicorn host (e.g. http://127.0.0.1:8000)."
+                  : `Voice WebSocket closed (${ev.code}${ev.reason ? `: ${ev.reason}` : ""}). Confirm the API is running and browser can reach ${baseUrl}.`),
+              );
               setBusy(false);
               setLiveCaption(null);
               resolve();
@@ -901,7 +1098,7 @@ export default function CallPage() {
         }
       });
     },
-    [attachAudio, returnSpeech, sessionId, wsBase, conversationId, mergeResultIntoTranscript],
+    [attachAudio, returnSpeech, sessionId, wsBase, baseUrl, conversationId, mergeResultIntoTranscript],
   );
 
   const startMic = useCallback(async () => {
@@ -974,27 +1171,40 @@ export default function CallPage() {
 
   useEffect(() => {
     if (chatMode === "text") {
-      setVoiceBackend(null);
       setLiveKitSurfaceOn(false);
       setLiveKitMicLive(false);
       setVoiceSurfaceHint(null);
+      setLiveKitStatusOk(null);
       stopVoiceSession();
       return;
     }
   }, [chatMode, stopVoiceSession]);
 
   useEffect(() => {
+    if (prevChatModeRef.current === "text" && chatMode === "voice") {
+      userVoiceBackendPinnedRef.current = false;
+      setLiveKitStatusOk(null);
+    }
+    prevChatModeRef.current = chatMode;
+  }, [chatMode]);
+
+  useEffect(() => {
     if (chatMode !== "voice" || !roomReady) return;
 
     let cancelled = false;
     void (async () => {
-      /* Do not set voiceBackend=null here — that unmounts LiveKit (CLIENT_INITIATED disconnect).
-       * This effect reruns when baseUrl/roomReady change; wiping backend mid-call was killing sessions. */
+      const preferLiveKit =
+        (process.env.NEXT_PUBLIC_PREFER_LIVEKIT_VOICE ?? "").trim() === "1";
 
       if (!livekitPublicUrl) {
         if (!cancelled) {
-          setVoiceBackend("websocket");
-          setVoiceSurfaceHint("WebSocket voice (set NEXT_PUBLIC_LIVEKIT_URL to try LiveKit).");
+          setLiveKitStatusOk(false);
+          if (!userVoiceBackendPinnedRef.current) {
+            setVoiceBackend("websocket");
+            setVoiceSurfaceHint(
+              "WebSocket voice — set NEXT_PUBLIC_LIVEKIT_URL to enable the LiveKit transport above.",
+            );
+          }
         }
         return;
       }
@@ -1004,16 +1214,26 @@ export default function CallPage() {
         const json = (await res.json()) as { token_service_enabled?: boolean };
         if (cancelled) return;
         const canLk = res.ok && json.token_service_enabled === true;
-        setVoiceBackend(canLk ? "livekit" : "websocket");
-        setVoiceSurfaceHint(
-          canLk
-            ? "LiveKit selected — connecting…"
-            : "Using WebSocket voice (LiveKit keys not available).",
-        );
+        setLiveKitStatusOk(canLk);
+
+        if (!userVoiceBackendPinnedRef.current) {
+          const next = preferLiveKit && canLk ? "livekit" : "websocket";
+          setVoiceBackend(next);
+          setVoiceSurfaceHint(
+            next === "livekit"
+              ? "LiveKit selected — connecting…"
+              : canLk
+                ? "WebSocket voice — use LiveKit above to exercise the room worker."
+                : "WebSocket voice — LiveKit token service unavailable (check API keys /livekit/status).",
+          );
+        }
       } catch {
         if (!cancelled) {
-          setVoiceBackend("websocket");
-          setVoiceSurfaceHint("WebSocket voice (could not reach /livekit/status).");
+          setLiveKitStatusOk(false);
+          if (!userVoiceBackendPinnedRef.current) {
+            setVoiceBackend("websocket");
+            setVoiceSurfaceHint("WebSocket voice — could not reach /livekit/status.");
+          }
         }
       }
     })();
@@ -1062,6 +1282,7 @@ export default function CallPage() {
   const onLiveKitConnectionFailed = useCallback((detail: string) => {
     setLiveKitSurfaceOn(false);
     setLiveKitMicLive(false);
+    userVoiceBackendPinnedRef.current = true;
     setVoiceSurfaceHint(
       `${detail.length > 100 ? `${detail.slice(0, 100)}…` : detail} — switched to WebSocket.`,
     );
@@ -1137,8 +1358,14 @@ export default function CallPage() {
       if (cancelled) return;
       const rms = pcmRmsTimeDomain(analyser);
       const loud = rms > VAD_RMS_THRESHOLD;
+      const bargeLoudEnough = rms > VAD_RMS_THRESHOLD * VAD_BARGE_RMS_MULT;
+      const now = performance.now();
 
-      if (speakingRef.current && loud) {
+      if (
+        speakingRef.current &&
+        bargeLoudEnough &&
+        now >= ttsBargeInGraceUntilRef.current
+      ) {
         bargeLoud += 1;
         if (bargeLoud >= VAD_BARGE_IN_LOUD_TICKS) {
           ttsLifecycleRef.current?.stop();
@@ -1451,15 +1678,71 @@ export default function CallPage() {
                 </button>
               </div>
             ) : (
-              <div className="mx-auto max-w-2xl rounded-xl border border-zinc-800 bg-zinc-900/35 px-4 py-4 text-sm text-zinc-300">
-                <p className="leading-relaxed">
-                  {voiceSurfaceHint ??
-                    (!roomReady
-                      ? "Starting session…"
-                      : voiceBackend === null
-                        ? "Preparing voice…"
-                        : "Voice session starting…")}
-                </p>
+              <div className="mx-auto max-w-2xl space-y-3">
+                <div>
+                  <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                    Voice transport
+                  </p>
+                  <div className="inline-flex w-full rounded-xl border border-zinc-700 p-0.5 sm:w-auto">
+                    <button
+                      type="button"
+                      aria-pressed={voiceBackend === "websocket"}
+                      onClick={() => {
+                        userVoiceBackendPinnedRef.current = true;
+                        setVoiceBackend("websocket");
+                        setVoiceSurfaceHint("WebSocket voice — pause ~1s after speaking to send.");
+                      }}
+                      disabled={busy || !roomReady}
+                      className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-none sm:min-w-[8rem] ${
+                        voiceBackend === "websocket"
+                          ? "bg-teal-600 text-white"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      } disabled:opacity-40`}
+                    >
+                      WebSocket
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={voiceBackend === "livekit"}
+                      onClick={() => {
+                        userVoiceBackendPinnedRef.current = true;
+                        setVoiceBackend("livekit");
+                        setVoiceSurfaceHint("LiveKit selected — connecting…");
+                      }}
+                      disabled={
+                        busy ||
+                        !roomReady ||
+                        !livekitPublicUrl ||
+                        liveKitStatusOk !== true
+                      }
+                      title={
+                        !livekitPublicUrl
+                          ? "Set NEXT_PUBLIC_LIVEKIT_URL"
+                          : liveKitStatusOk === null
+                            ? "Checking LiveKit…"
+                            : liveKitStatusOk === false
+                              ? "LiveKit token service not available"
+                              : "Room worker + RTC"
+                      }
+                      className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-colors sm:flex-none sm:min-w-[8rem] ${
+                        voiceBackend === "livekit"
+                          ? "bg-teal-600 text-white"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      } disabled:opacity-40`}
+                    >
+                      LiveKit
+                    </button>
+                  </div>
+                  {livekitPublicUrl && liveKitStatusOk === null ? (
+                    <p className="mt-1 text-[11px] text-zinc-500">Checking LiveKit token service…</p>
+                  ) : null}
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/35 px-4 py-4 text-sm text-zinc-300">
+                  <p className="leading-relaxed">
+                    {voiceSurfaceHint ??
+                      (!roomReady ? "Starting session…" : "Voice session starting…")}
+                  </p>
+                </div>
               </div>
             )}
 
@@ -1565,6 +1848,7 @@ export default function CallPage() {
           onMicPublished={onLiveKitMicPublished}
           onTranscriptExchange={appendExchange}
           onVoiceAgentData={onLiveKitVoiceAgentData}
+          onAssistantSpeakingStarted={onLiveKitAssistantSpeakingStarted}
         />
       ) : null}
     </div>

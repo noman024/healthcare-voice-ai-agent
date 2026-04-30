@@ -105,7 +105,18 @@ export default function AvatarVoice({
       if (syncStart == null) return true;
       if (!Number.isFinite(v.duration) || v.duration <= 0 || Number.isNaN(v.duration)) return false;
       const elapsed = (performance.now() - syncStart) / 1000;
-      const t = Math.min(Math.max(0, elapsed), Math.max(0, v.duration - 0.04));
+      const dur = v.duration;
+      // MuseTalk often finishes seconds after room audio: seeking to `elapsed` jumps near the end and
+      // fires `ended` immediately — looks like a static portrait + pulse. Play from start when we're late.
+      if (elapsed >= dur - 0.08) {
+        try {
+          v.currentTime = 0;
+        } catch {
+          /* ignore */
+        }
+        return true;
+      }
+      const t = Math.min(Math.max(0, elapsed), Math.max(0, dur - 0.04));
       try {
         v.currentTime = t;
       } catch {
@@ -118,7 +129,12 @@ export default function AvatarVoice({
       if (playbackStarted) return;
       if (syncStart != null && !seekToSyncedTime()) return;
       playbackStarted = true;
-      void v.play().catch(() => end());
+      void v.play().catch((err) => {
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[AvatarVoice] lipsync video play() failed", err);
+        }
+        end();
+      });
     };
 
     v.src = url;
