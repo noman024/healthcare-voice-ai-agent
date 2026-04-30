@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import io
+import logging
 import wave
+from collections.abc import Awaitable, Callable
 
 import httpx
 from livekit import rtc
 from livekit.agents import tts
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions
 from livekit.agents.utils import shortuuid
+
+logger = logging.getLogger(__name__)
 
 
 def _resample_int16_pcm(
@@ -41,6 +45,7 @@ class FastApiPiperTTS(tts.TTS):
         base_url: str,
         publish_sample_rate: int = 24_000,
         timeout_s: float = 120.0,
+        on_original_wav: Callable[[bytes], Awaitable[None]] | None = None,
     ) -> None:
         super().__init__(
             capabilities=tts.TTSCapabilities(streaming=False),
@@ -50,6 +55,7 @@ class FastApiPiperTTS(tts.TTS):
         self._publish_sr = publish_sample_rate
         self._base = base_url.rstrip("/")
         self._timeout = timeout_s
+        self._on_original_wav = on_original_wav
         self._client = httpx.AsyncClient(
             base_url=self._base,
             timeout=httpx.Timeout(timeout_s),
@@ -92,6 +98,13 @@ class _FastApiChunkedStream(tts.ChunkedStream):
         r = await self._http.post("/tts", json={"text": self.input_text})
         r.raise_for_status()
         wav = r.content
+        cb = self._piper._on_original_wav
+        if cb:
+            # Await only ``tts_begin`` + schedule chunk fan-out; push room audio after (see voice_agent).
+            try:
+                await cb(wav)
+            except Exception:
+                logger.exception("on_original_wav failed (MuseTalk UI fan-out)")
         pub_sr = self._piper._publish_sr
         with wave.open(io.BytesIO(wav), "rb") as wf:
             src_sr = wf.getframerate()

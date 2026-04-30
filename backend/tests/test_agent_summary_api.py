@@ -112,6 +112,25 @@ def test_agent_summary_loads_transcript_by_conversation_id(api_client, tmp_path,
     assert body["conversation_id"] == "room-x"
     assert body["session_id"] == "+15550001111"
     assert body["summary"] == "short"
+def test_agent_summary_accepts_transcript_fallback_when_db_empty(api_client, monkeypatch):
+    clear_session_memory_for_tests()
+    monkeypatch.setattr(
+        ollama_mod,
+        "ollama_chat",
+        lambda *a, **k: '{"narrative":"from fallback","user_preferences":[]}',
+    )
+    r = api_client.post(
+        "/agent/summary",
+        json={
+            "session_id": "lk-tab",
+            "conversation_id": "conv-uuid",
+            "transcript_fallback": "user: hello\nassistant: hi there",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["summary"] == "from fallback"
+
+
 def test_session_transcript_helper():
     clear_session_memory_for_tests()
     m = get_session_memory("trx")

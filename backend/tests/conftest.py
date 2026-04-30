@@ -48,5 +48,9 @@ def api_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.sqlite"))
     from app.main import app
 
+    # load_dotenv() in app.main merges real backend/.env; clear MuseTalk flags unless a test sets them.
+    monkeypatch.delenv("MUSETALK_ENABLED", raising=False)
+    monkeypatch.delenv("MUSETALK_SERVICE_URL", raising=False)
+
     with TestClient(app) as c:
         yield c

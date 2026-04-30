@@ -25,6 +25,11 @@ ENV/
 .tools/
 # If recreated by mistake, keep ignored
 .local/
+# Optional local clone of MuseTalk or other heavy reference repos (see README)
+third_party/
+
+# MuseTalk coord / output cache (backend cwd)
+backend/.musetalk_cache/
 
 # Node / Next.js
 node_modules/
@@ -64,3 +69,7 @@ coverage.xml
 htmlcov/
 .pytest_cache/
 .mypy_cache/
+
+.venv-musetalk/
+.micromamba/
+bin/

@@ -16,6 +16,8 @@ type Props = {
   active: boolean;
   roomName: string;
   identity: string;
+  /** Matches ``conversation_id`` on `/call` for worker transcript persist + summary. */
+  conversationId?: string;
   /** Called after token/connect/mic failures so parent can fall back (e.g. WebSocket voice). */
   onConnectionFailed?: (message: string) => void;
   /** Connected to room (mic may still be settling). */
@@ -30,6 +32,8 @@ type Props = {
    * Same shape as ``appendExchange`` on the call page transcript.
    */
   onTranscriptExchange?: (user: string | null, assistant: string | null) => void;
+  /** Worker→room data on topic ``va`` (tool results, conversation_ended). */
+  onVoiceAgentData?: (msg: Record<string, unknown>) => void;
 };
 
 export function sanitizeLiveKitRoomName(room: string, fallback: string): string {
@@ -69,12 +73,14 @@ export default function LiveKitPanel({
   active,
   roomName,
   identity,
+  conversationId = "",
   onConnectionFailed,
   onConnected,
   onDisconnected,
   onStatusChange,
   onMicPublished,
   onTranscriptExchange,
+  onVoiceAgentData,
 }: Props) {
   const livekitUrl = (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? "").trim().replace(/\/$/, "");
   const roomRef = useRef<Room | null>(null);
@@ -90,9 +96,23 @@ export default function LiveKitPanel({
     onTranscriptExchangeRef.current = onTranscriptExchange;
   }, [onTranscriptExchange]);
 
+  const onVoiceAgentDataRef = useRef(onVoiceAgentData);
+  useEffect(() => {
+    onVoiceAgentDataRef.current = onVoiceAgentData;
+  }, [onVoiceAgentData]);
+
   const transcriptionDedupeRef = useRef(new Set<string>());
   const transcriptionListenerRef = useRef<
     ((segments: TranscriptionSegment[], participant?: Participant) => void) | null
+  >(null);
+  const dataReceivedListenerRef = useRef<
+    | ((
+        payload: Uint8Array,
+        participant?: RemoteParticipant,
+        kind?: unknown,
+        topic?: string,
+      ) => void)
+    | null
   >(null);
 
   useEffect(() => {
@@ -116,8 +136,11 @@ export default function LiveKitPanel({
     agentWaitCleanupRef.current = null;
     const r = roomRef.current;
     const tr = transcriptionListenerRef.current;
+    const dr = dataReceivedListenerRef.current;
     if (r && tr) r.off(RoomEvent.TranscriptionReceived, tr);
+    if (r && dr) r.off(RoomEvent.DataReceived, dr);
     transcriptionListenerRef.current = null;
+    dataReceivedListenerRef.current = null;
     transcriptionDedupeRef.current.clear();
     roomRef.current = null;
     if (r && r.state !== "disconnected") await r.disconnect();
@@ -188,6 +211,15 @@ export default function LiveKitPanel({
             }
             transcriptionListenerRef.current = null;
           }
+          const dr = dataReceivedListenerRef.current;
+          if (dr) {
+            try {
+              r.off(RoomEvent.DataReceived, dr);
+            } catch {
+              /* ignore */
+            }
+            dataReceivedListenerRef.current = null;
+          }
           transcriptionDedupeRef.current.clear();
         };
 
@@ -228,6 +260,15 @@ export default function LiveKitPanel({
         report("Connecting to LiveKit…");
         await r.connect(livekitUrl, body.token);
 
+        const cid = (conversationId ?? "").trim();
+        if (cid) {
+          try {
+            await r.localParticipant.setMetadata(JSON.stringify({ conversation_id: cid }));
+          } catch (err: unknown) {
+            report(`LiveKit metadata: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
         if (!mountedRef.current || !stillCurrent()) {
           detachTranscriptionFromThisRoom();
           roomRef.current = null;
@@ -257,6 +298,26 @@ export default function LiveKitPanel({
         };
         transcriptionListenerRef.current = onRoomTranscription;
         r.on(RoomEvent.TranscriptionReceived, onRoomTranscription);
+
+        const onVaData = (
+          payload: Uint8Array,
+          participant: RemoteParticipant | undefined,
+          _kind: unknown,
+          topic: string | undefined,
+        ): void => {
+          if (String(topic ?? "") !== "va") return;
+          if (!participant || !mountedRef.current) return;
+          const relay = onVoiceAgentDataRef.current;
+          if (!relay) return;
+          try {
+            const txt = new TextDecoder().decode(payload);
+            relay(JSON.parse(txt) as Record<string, unknown>);
+          } catch {
+            /* ignore malformed worker payloads */
+          }
+        };
+        dataReceivedListenerRef.current = onVaData;
+        r.on(RoomEvent.DataReceived, onVaData);
 
         /** Unlock remote playback; standalone createLocalTracks does not emit AudioStreamAcquired on the participant. */
         const playbackDiagSid = new Set<string>();
@@ -499,6 +560,7 @@ export default function LiveKitPanel({
     },
     [
       apiBase,
+      conversationId,
       disconnectSilent,
       identity,
       livekitUrl,
@@ -541,6 +603,7 @@ export default function LiveKitPanel({
     livekitUrl,
     roomName,
     identity,
+    conversationId,
     apiBase,
     connectFlow,
     disconnectSilent,

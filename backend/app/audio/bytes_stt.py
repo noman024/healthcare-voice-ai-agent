@@ -32,6 +32,7 @@ def transcribe_audio_bytes(
     *,
     suffix: str,
     language: str | None = None,
+    beam_size: int | None = None,
 ) -> tuple[str, str | None]:
     """
     Write ``data`` to a temporary file and run ``transcribe_path``.
@@ -44,6 +45,6 @@ def transcribe_audio_bytes(
         tmp.write(data)
         tmp_path = tmp.name
     try:
-        return transcribe_path(tmp_path, language=language)
+        return transcribe_path(tmp_path, language=language, beam_size=beam_size)
     finally:
         Path(tmp_path).unlink(missing_ok=True)

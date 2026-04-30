@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from livekit import rtc
 from livekit.agents import stt
@@ -12,6 +13,14 @@ from livekit.agents.stt import SpeechData, SpeechEvent, SpeechEventType, STTCapa
 from livekit.agents.types import NOT_GIVEN, APIConnectOptions, NotGivenOr
 
 from app.audio.bytes_stt import transcribe_audio_bytes
+
+
+def _livekit_whisper_beam() -> int:
+    raw = (os.getenv("VOICE_LIVEKIT_WHISPER_BEAM") or "").strip()
+    if raw:
+        return max(1, int(raw))
+    # Lower than typical WHISPER_BEAM_SIZE=5 for snappier turns (override via env).
+    return 3
 
 
 class FasterWhisperBatchSTT(stt.STT):
@@ -49,8 +58,10 @@ class FasterWhisperBatchSTT(stt.STT):
         wav = combined.to_wav_bytes()
         lang = language if isinstance(language, str) and language.strip() else None
 
+        beam = _livekit_whisper_beam()
+
         def _run() -> tuple[str, str | None]:
-            return transcribe_audio_bytes(wav, suffix=".wav", language=lang)
+            return transcribe_audio_bytes(wav, suffix=".wav", language=lang, beam_size=beam)
 
         text, detected = await asyncio.to_thread(_run)
         lang_code = (detected or lang or "en").strip() or "en"

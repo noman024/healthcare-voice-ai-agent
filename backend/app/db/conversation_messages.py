@@ -80,6 +80,53 @@ def persist_exchange(
     conn.commit()
 
 
+def fetch_transcript_text(conn: sqlite3.Connection, session_id: str) -> str:
+    """Chronological dialogue as ``role: content`` lines (empty if no rows)."""
+    sid = (session_id or "").strip()
+    if not sid:
+        return ""
+    rows = conn.execute(
+        """
+        SELECT role, content FROM conversation_messages
+        WHERE session_id = ?
+        ORDER BY id ASC
+        """,
+        (sid,),
+    ).fetchall()
+    lines: list[str] = []
+    for row in rows:
+        role = str(row["role"] if isinstance(row, sqlite3.Row) else row[0]).strip()
+        content = str(row["content"] if isinstance(row, sqlite3.Row) else row[1]).strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def persist_worker_line(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    role: str,
+    content: str,
+) -> None:
+    """Insert one turn line from the trusted LiveKit worker (same truncate rules as REST)."""
+    sid = (session_id or "").strip()
+    if not sid:
+        return
+    r = (role or "").strip().lower()
+    if r not in ("user", "assistant"):
+        raise ValueError("role must be user or assistant")
+    text = (content or "").strip()
+    if not text:
+        return
+    conn.execute(
+        "INSERT INTO conversation_messages (session_id, role, content) VALUES (?, ?, ?)",
+        (sid, r, text),
+    )
+    _truncate_session_rows(conn, sid)
+    conn.commit()
+
+
 def _truncate_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
     """Retain at most the newest ``CONVERSATION_PERSIST_MAX_MESSAGES`` exchanges (paired rows)."""
     keep = _max_sql_rows()

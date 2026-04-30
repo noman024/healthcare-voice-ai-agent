@@ -103,7 +103,8 @@ Use this when you want **browser WebRTC** + **livekit-agents** instead of (or al
 2. **Backend env** (`backend/.env`):
   - `LIVEKIT_URL` — e.g. `ws://127.0.0.1:7880` (must match the server).
   - `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — must match the server.
-  - `VOICE_API_BASE` — URL of **this** FastAPI app as the worker will call it (default `http://127.0.0.1:8000`). Change if the API listens elsewhere.
+   - `VOICE_API_BASE` — URL of **this** FastAPI app as the worker will call it (default `http://127.0.0.1:8000`). Change if the API listens elsewhere.
+   - `VOICE_INTERNAL_SECRET` — **same random string** in API + worker env so the worker can `POST /internal/voice/worker/transcript` after each user/assistant line. Required for **call summaries** on the LiveKit-only path (mirrors `/call` `conversation_id` into SQLite). If unset, the route returns 404 and the worker skips persistence.
   - The worker reuses `OLLAMA_*` / `OLLAMA_MODEL` from the same file when API and worker run on one machine.
 3. **Worker dependencies** (venv active, `cd backend/`):
   ```bash
@@ -125,17 +126,80 @@ Use this when you want **browser WebRTC** + **livekit-agents** instead of (or al
     ```
   - Terminal C: `npm run dev` in `frontend/`.
 6. **Frontend env** (`frontend/.env.local`):
-  - `NEXT_PUBLIC_LIVEKIT_URL` — e.g. `ws://127.0.0.1:7880`.
-  - `NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM` — default room name shown on `/call`; use the **same** name when you click **Connect** in the LiveKit panel so the browser and agent share one room.
+   - `NEXT_PUBLIC_LIVEKIT_URL` — e.g. `ws://127.0.0.1:7880`.
+   - `NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM` — default room name shown on `/call`; use the **same** name when you click **Connect** in the LiveKit panel so the browser and agent share one room.
+   - Optional: `NEXT_PUBLIC_MUSETALK_ENABLED=1` when the API has MuseTalk enabled — see **MuseTalk lip-sync** below.
+
+## MuseTalk lip-sync (optional, GPU)
+
+End-to-end / production path for **video** lipsync after Piper TTS on routes that return `audio_wav_base64` (text chat, push-to-talk upload, WebSocket voice with `return_speech`). **LiveKit** assistant audio stays **canvas**-only unless you add a worker-side video track later.
+
+1. **Clone** into `third_party/MuseTalk` (folder is gitignored — create it beside `backend/`):
+
+   ```bash
+   mkdir -p third_party && git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git third_party/MuseTalk
+   ```
+
+2. **Fix image-reference cleanup** (upstream bug for static portraits):
+
+   ```bash
+   python backend/scripts/fix_musetalk_inference_image.py
+   ```
+
+3. **Weights** — idempotent download (needs `hf` from `huggingface_hub` and `gdown`; use your backend venv or `pip install huggingface_hub gdown`):
+
+   ```bash
+   export PATH="$PWD/backend/.venv/bin:$PATH"   # or wherever `hf` is installed
+   bash backend/scripts/setup_musetalk_weights.sh
+   ```
+
+   Manual option: follow [MuseTalk README](https://github.com/TMElyralab/MuseTalk) / HuggingFace `TMElyralab/MuseTalk` so `models/musetalkV15/unet.pth`, `models/whisper/`, etc. exist under `MUSETALK_ROOT`.
+
+4. **Python** — MuseTalk depends on OpenMMLab (`mmcv`, `mmpose`, …). Upstream assumes **Python 3.10** and a CUDA PyTorch build; plain **Python 3.12** venvs often fail on `chumpy` / old pins. Prefer **conda** (or Docker) with 3.10, then install upstream deps and point the API at that interpreter:
+
+   ```bash
+   conda create -n musetalk python=3.10 -y && conda activate musetalk
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+   cd third_party/MuseTalk && pip install -r requirements.txt
+   # then openmim / mmcv / mmdet / mmpose per MuseTalk README
+   ```
+
+   In `backend/.env`: `MUSETALK_PYTHON=/absolute/path/to/that/bin/python`
+
+   After `pip install -r requirements.txt`, **remove TensorFlow** (inference does not use it; on many Linux hosts it still gets imported indirectly and can raise **SIGILL** during `diffusers` / VAE import):
+
+   ```bash
+   pip uninstall -y tensorflow tensorboard tensorflow-estimator tensorflow-io-gcs-filesystem
+   ```
+
+   If `mim install "mmpose==1.1.0"` fails building **chumpy**, run `pip install chumpy --no-build-isolation` and retry.
+
+5. **Reference portrait** — default `backend/assets/musetalk/reference.jpg` (replace with a clear front-facing face for your brand). Set `MUSETALK_REFERENCE_IMAGE` if needed.
+
+6. **FFmpeg** — required to mux the MP4. Install `ffmpeg` on `PATH`, **or** run `bash backend/scripts/setup_ffmpeg_static.sh` and set `MUSETALK_FFMPEG_PATH=third_party/ffmpeg-static/current` in `backend/.env` (path is relative to the **repo root**).
+
+7. **Dedicated port** — run MuseTalk on **8001** (or any port) so the main API stays on **8000**:
+
+   ```bash
+   cd backend && uvicorn app.musetalk.service_app:app --host 0.0.0.0 --port 8001
+   ```
+
+   In `backend/.env` on the machine that runs the **main** API, set `MUSETALK_SERVICE_URL=http://127.0.0.1:8001` so `/avatar/lipsync` and `/avatar/lipsync/status` are forwarded there. The MuseTalk process uses the same `backend/.env`; set `MUSETALK_ENABLED=1` there (and `MUSETALK_PYTHON`, weights paths, etc.). If you omit `MUSETALK_SERVICE_URL`, the main API runs inference in-process instead.
+
+8. **Enable** — `MUSETALK_ENABLED=1` on the **MuseTalk service**, `NEXT_PUBLIC_MUSETALK_ENABLED=1`, and optionally `NEXT_PUBLIC_MUSETALK_API_URL=http://127.0.0.1:8001` so the browser talks to the lip-sync service directly (CORS is enabled on `service_app`). Check `GET http://localhost:8000/avatar/lipsync/status` (proxied) or `GET http://localhost:8001/avatar/lipsync/status` (direct) for `{ "ready": true, "ffmpeg": true }`.
+
+9. **API** — `POST /avatar/lipsync` (multipart field `audio`, WAV) returns MP4. Inference is **single-flight** per GPU (`MUSETALK_SINGLE_FLIGHT`, default on).
 
 ## Database (SQLite)
+
+
 
 
 | Topic      | Detail                                                                                                                                            |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Path**   | `DATABASE_PATH` in `backend/.env`. Relative paths resolve from the **process cwd**—run `uvicorn` from `backend/` or use an absolute path. |
 | **Init**   | `CREATE TABLE IF NOT EXISTS` on startup (`[backend/app/db/database.py](backend/app/db/database.py)`).                                             |
-| **Tables** | `appointments`; optional `conversation_messages` when `CONVERSATION_PERSIST=1`.                                                               |
+| **Tables** | `appointments`; `conversation_messages` written by (**a**) `CONVERSATION_PERSIST=1` on REST/WebSocket turns, or (**b**) the LiveKit worker when `VOICE_INTERNAL_SECRET` is set. |
 | **Reset**  | Stop API, delete/replace the DB file, restart.                                                                                                    |
 
 
@@ -149,10 +213,11 @@ Templates: `[backend/.env.example](backend/.env.example)`, `[frontend/.env.local
 | Area             | Notes                                                                                                                                                       |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **CORS**         | `CORS_ORIGINS` must include the Next.js origin in production.                                                                                               |
-| **Transcripts**  | `CONVERSATION_PERSIST=1` keeps dialogue in SQLite for `POST /agent/summary` across restarts.                                                                |
-| **Phone locale** | Optional `PHONE_DEFAULT_CC` (e.g. **880** / `bd` vs UK **07…** → **+44**).                                                                            |
-| **STT / GPU**    | `WHISPER_DEVICE`, `CUDA_LIBRARY_PATH`, etc.—see `.env.example` and README notes in `[requirements-whisper-gpu.txt](backend/requirements-whisper-gpu.txt)`.  |
-| **LiveKit**      | Backend: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `VOICE_API_BASE`. Frontend: `NEXT_PUBLIC_LIVEKIT_URL`, `NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM`. |
+| **Transcripts**  | `CONVERSATION_PERSIST=1` persists REST/WebSocket dialogue. **LiveKit:** set `VOICE_INTERNAL_SECRET` (API + worker) so turns also land in `conversation_messages` under the browser `conversation_id` for `POST /agent/summary`. |
+| **Phone locale** | Optional `PHONE_DEFAULT_CC` (e.g. **880** / `bd` vs UK **07…** → **+44**). |
+| **STT / GPU**    | `WHISPER_DEVICE`, `CUDA_LIBRARY_PATH`, etc. — see `backend/.env.example` and [`requirements-whisper-gpu.txt`](backend/requirements-whisper-gpu.txt). |
+| **LiveKit**      | Backend: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `VOICE_API_BASE`, optional `VOICE_INTERNAL_SECRET`. Frontend: `NEXT_PUBLIC_LIVEKIT_URL`, `NEXT_PUBLIC_LIVEKIT_DEFAULT_ROOM`. |
+| **MuseTalk**     | Dedicated `uvicorn app.musetalk.service_app:app --port 8001`; `MUSETALK_SERVICE_URL` on main API; `MUSETALK_*` / `MUSETALK_PYTHON`; `NEXT_PUBLIC_MUSETALK_ENABLED`. See **MuseTalk lip-sync**. |
 
 
 Optional vendor paths under `.tools/` are documented in `backend/.env.example`.
@@ -189,7 +254,7 @@ bash scripts/e2e_integration_real.sh
 
 ## API overview
 
-- **HTTP:** `POST /process`, `POST /conversation`, `POST /agent/summary`, `POST /tools/invoke`, `POST /stt`, `POST /tts`, `GET /livekit/token`
+- **HTTP:** `POST /process`, `POST /conversation`, `POST /agent/summary`, `POST /tools/invoke`, `POST /stt`, `POST /tts`, `GET /livekit/token`, `GET /avatar/lipsync/status`, `POST /avatar/lipsync` (MuseTalk, optional), `POST /internal/voice/worker/transcript` (worker + `VOICE_INTERNAL_SECRET` only)
 - **WebSocket:** `/ws/agent`, `/ws/conversation_audio`
 - **Docs:** `GET /docs`
 

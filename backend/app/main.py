@@ -33,6 +33,17 @@ if _log_file_path:
 _APP_VERSION = "0.8.0"
 
 
+def _musetalk_service_url() -> str:
+    return (os.getenv("MUSETALK_SERVICE_URL") or "").strip().rstrip("/")
+
+
+def _musetalk_proxy_timeout() -> float:
+    try:
+        return float(os.getenv("MUSETALK_PROXY_TIMEOUT_SEC", "300").strip() or "300")
+    except ValueError:
+        return 300.0
+
+
 def _parse_cors_origins() -> list[str]:
     raw = os.getenv("CORS_ORIGINS", "http://localhost:3000")
     return [o.strip() for o in raw.split(",") if o.strip()]
@@ -181,6 +192,51 @@ def health_llm() -> Any:
         )
 
 
+def _voice_internal_secret_configured() -> str | None:
+    s = (os.getenv("VOICE_INTERNAL_SECRET") or "").strip()
+    return s or None
+
+
+def _require_voice_internal(request: Request) -> None:
+    secret = _voice_internal_secret_configured()
+    if not secret:
+        raise HTTPException(status_code=404, detail="Not found")
+    got = (request.headers.get("X-Voice-Internal") or "").strip()
+    if got != secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+class WorkerTranscriptBody(BaseModel):
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    role: str = Field(..., min_length=1, max_length=16)
+    content: str = Field(..., min_length=1, max_length=32000)
+
+
+@app.post("/internal/voice/worker/transcript")
+def internal_worker_transcript(
+    body: WorkerTranscriptBody,
+    request: Request,
+) -> dict[str, str]:
+    """
+    Append one transcript line from the trusted LiveKit voice worker (mirrors browser ``conversation_id``).
+    Disabled when ``VOICE_INTERNAL_SECRET`` is unset. Requires header ``X-Voice-Internal``.
+    """
+    _require_voice_internal(request)
+    from app.db.conversation_messages import persist_worker_line
+
+    role = body.role.strip().lower()
+    try:
+        persist_worker_line(
+            request.app.state.db_conn,
+            session_id=body.conversation_id.strip(),
+            role=role,
+            content=body.content,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return {"status": "ok"}
+
+
 class ToolInvokeBody(BaseModel):
     tool: str = Field(..., min_length=1)
     arguments: dict[str, Any] = Field(default_factory=dict)
@@ -235,6 +291,11 @@ class AgentSummaryBody(BaseModel):
         max_length=32,
         description="Optional E.164-style phone to list DB appointments; else session_id is tried if it looks like a phone.",
     )
+    transcript_fallback: str | None = Field(
+        default=None,
+        max_length=200_000,
+        description="When SQLite has no rows (e.g. LiveKit mirror not configured), use this dialogue text for summarization.",
+    )
 
 
 @app.post("/agent/summary")
@@ -251,6 +312,11 @@ def agent_summary(body: AgentSummaryBody, request: Request) -> dict[str, Any]:
             session_id=sid,
             conversation_id=tid,
             phone=(body.phone.strip() if isinstance(body.phone, str) and body.phone.strip() else None),
+            transcript_fallback=(
+                body.transcript_fallback.strip()
+                if isinstance(body.transcript_fallback, str) and body.transcript_fallback.strip()
+                else None
+            ),
             include_cost_hints=cost,
         )
     except ValueError as e:
@@ -553,3 +619,90 @@ def tts_endpoint(body: TTSBody) -> Response:
     except TTSError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return Response(content=wav, media_type="audio/wav")
+
+
+@app.get("/avatar/lipsync/status")
+async def avatar_lipsync_status() -> Any:
+    """
+    When ``MUSETALK_SERVICE_URL`` is set (e.g. ``http://127.0.0.1:8001``), forwards to the
+    dedicated MuseTalk service; otherwise reports local/in-process MuseTalk status.
+    """
+    base = _musetalk_service_url()
+    if base:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                r = await client.get(f"{base}/avatar/lipsync/status")
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"MuseTalk service unreachable ({base}): {e}",
+                ) from e
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    from app.musetalk.lipsync_api import avatar_lipsync_status_handler
+
+    return await avatar_lipsync_status_handler()
+
+
+@app.post("/avatar/lipsync")
+async def avatar_lipsync(request: Request) -> Response:
+    """
+    When ``MUSETALK_SERVICE_URL`` is set, forwards the multipart upload to that service; otherwise runs
+    MuseTalk in this process (same ``MUSETALK_*`` env as the standalone service).
+    """
+    from io import BytesIO
+
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
+    base = _musetalk_service_url()
+    form = await request.form()
+    audio_f = form.get("audio")
+    if audio_f is None:
+        raise HTTPException(status_code=422, detail="Missing multipart field 'audio'.")
+    content = await audio_f.read()
+    filename = getattr(audio_f, "filename", None) or "audio.wav"
+
+    if base:
+        content_type = getattr(audio_f, "content_type", None) or "audio/wav"
+        async with httpx.AsyncClient(timeout=_musetalk_proxy_timeout()) as client:
+            try:
+                r = await client.post(
+                    f"{base}/avatar/lipsync",
+                    files={"audio": (filename, content, content_type)},
+                )
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"MuseTalk service unreachable ({base}): {e}",
+                ) from e
+        ct = r.headers.get("content-type") or "video/mp4"
+        return Response(content=r.content, media_type=ct, status_code=r.status_code)
+
+    if not content:
+        raise HTTPException(status_code=422, detail="Empty audio upload.")
+
+    from app.musetalk.lipsync_api import avatar_lipsync_post_handler
+
+    uf = StarletteUploadFile(file=BytesIO(content), filename=filename)
+    return await avatar_lipsync_post_handler(uf)
+
+
+@app.get("/avatar/reference")
+async def avatar_reference() -> Response:
+    """
+    Serves ``MUSETALK_REFERENCE_IMAGE`` for the call UI idle portrait. Proxies when ``MUSETALK_SERVICE_URL`` is set.
+    """
+    base = _musetalk_service_url()
+    if base:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                r = await client.get(f"{base}/avatar/reference")
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"MuseTalk service unreachable ({base}): {e}",
+                ) from e
+        ct = r.headers.get("content-type") or "image/jpeg"
+        return Response(content=r.content, media_type=ct, status_code=r.status_code)
+    from app.musetalk.lipsync_api import avatar_reference_image_handler
+
+    return avatar_reference_image_handler()

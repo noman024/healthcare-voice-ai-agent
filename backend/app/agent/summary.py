@@ -14,7 +14,10 @@ import httpx
 
 from app.agent.memory import get_session_memory
 from app.db import appointments as appt_repo
-from app.db.conversation_messages import hydrate_session_memory
+from app.db.conversation_messages import (
+    fetch_transcript_text,
+    hydrate_session_memory,
+)
 from app.llm import ollama as ollama_client
 from app.llm.prompts import SUMMARY_STRUCTURED_SYSTEM
 from app.tools.validation import ToolValidationError, normalize_phone
@@ -69,16 +72,26 @@ def build_agent_summary(
     session_id: str,
     conversation_id: str | None = None,
     phone: str | None = None,
+    transcript_fallback: str | None = None,
     client: httpx.Client | None = None,
     include_cost_hints: bool = False,
 ) -> dict[str, Any]:
     """Load transcript (hydrate from DB when persistence is enabled), attach DB appointments, LLM narrative + preferences."""
     tid = (conversation_id or "").strip() or (session_id.strip() or "default")
-    mem = get_session_memory(tid)
-    hydrate_session_memory(mem, conn, tid)
-    transcript = mem.transcript_text()
-    if not transcript.strip():
-        raise ValueError("No conversation recorded for this session_id yet.")
+    transcript = fetch_transcript_text(conn, tid).strip()
+    if not transcript:
+        mem = get_session_memory(tid)
+        hydrate_session_memory(mem, conn, tid)
+        transcript = mem.transcript_text().strip()
+    if not transcript and (transcript_fallback or "").strip():
+        transcript = (transcript_fallback or "").strip()
+        logger.info("agent_summary_using_client_transcript_fallback conversation_id=%s len=%s", tid, len(transcript))
+    if not transcript:
+        raise ValueError(
+            "No conversation recorded for this session_id yet. "
+            "For LiveKit voice, set VOICE_INTERNAL_SECRET on the API and worker and restart the worker so lines mirror to SQLite, "
+            "or the client will send transcript_fallback when you open Summary."
+        )
 
     lookup_phone = _resolve_lookup_phone(session_id, phone)
     appointments: list[dict[str, Any]] = []

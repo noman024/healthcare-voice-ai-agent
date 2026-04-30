@@ -124,6 +124,7 @@ def transcribe_path(
     path: str | Path,
     *,
     language: str | None = None,
+    beam_size: int | None = None,
 ) -> tuple[str, str | None]:
     """
     Transcribe audio file path. Returns (text, detected_language_or_none).
@@ -131,7 +132,12 @@ def transcribe_path(
     """
     path = Path(path)
     lang = language if language else None
-    beam = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
+    beam = (
+        int(beam_size)
+        if beam_size is not None
+        else int(os.getenv("WHISPER_BEAM_SIZE", "5"))
+    )
+    beam = max(1, beam)
 
     def _run(model: WhisperModel) -> tuple[str, str | None]:
         transcribe_kw: dict[str, Any] = {"language": lang, "beam_size": beam}

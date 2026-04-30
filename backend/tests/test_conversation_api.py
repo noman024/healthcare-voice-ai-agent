@@ -52,7 +52,7 @@ def test_conversation_audio_uses_stt_mock(api_client, monkeypatch, tmp_path):
     monkeypatch.setattr(
         bytes_stt_mod,
         "transcribe_path",
-        lambda p, language=None: ("user said test", "en"),
+        lambda p, language=None, beam_size=None: ("user said test", "en"),
     )
 
     def fake_chat(messages, *, client=None, timeout_s=None, response_format=None, model=None):

@@ -29,7 +29,7 @@ def test_health_llm_unavailable(monkeypatch, api_client):
 
 
 def test_stt_mocked_transcribe(api_client, monkeypatch):
-    def fake_transcribe(path, language=None):
+    def fake_transcribe(path, language=None, beam_size=None):
         return "book Tuesday at three", "en"
 
     monkeypatch.setattr("app.audio.bytes_stt.transcribe_path", fake_transcribe)
